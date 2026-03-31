@@ -21,13 +21,13 @@ from pydobot import Dobot
 #  AYARLAR — buradan değiştirin
 # ─────────────────────────────────────────────
 
-# Dobot seri port (Windows: "COM3", Linux: "/dev/ttyUSB0")
+# Dobot seri port 
 DOBOT_PORT = "COM3"
 
 # Home (başlangıç) pozisyonu — tarama buradan başlar
-HOME_X = 199.0
-HOME_Y = 0.05
-HOME_Z = -110.0
+HOME_X = 209.0
+HOME_Y = -39.0
+HOME_Z = -118.0
 HOME_R = 0.01
 
 # Sabit Z ve R değerleri (tarama boyunca sabit kalır)
@@ -158,34 +158,33 @@ def generate_scan_points(home_x, home_y, width, height, step):
     Hareket:
         - İlk satır: sağ → sol (Y artar)
         - Sonraki satır: sol → sağ (Y azalır)
-        - Her satır sonrası ileri gider (X artar)
+        - Her satır sonrası geri gider (X azalır)
 
     Alan:
-        X: home_x → home_x + height
+        X: home_x → home_x - height
         Y: home_y → home_y + width
     """
-
     points = []
     x = home_x
     row = 0
-
-    while x <= home_x + height:
+ 
+    while round(x, 6) >= round(home_x - height, 6):
         if row % 2 == 0:
             # sağdan sola → Y artar
             y = home_y
-            while y <= home_y + width:
+            while round(y, 6) <= round(home_y + width, 6):
                 points.append((round(x, 3), round(y, 3)))
-                y += step
+                y = round(y + step, 6)
         else:
             # soldan sağa → Y azalır
             y = home_y + width
-            while y >= home_y:
+            while round(y, 6) >= round(home_y, 6):
                 points.append((round(x, 3), round(y, 3)))
-                y -= step
-
-        x += step   # ileri git
+                y = round(y - step, 6)
+ 
+        x = round(x - step, 6)   # geri git
         row += 1
-
+ 
     return points
 
 # ─────────────────────────────────────────────
