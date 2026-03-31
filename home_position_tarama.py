@@ -25,7 +25,7 @@ from pydobot import Dobot
 DOBOT_PORT = "COM3"
 
 # Home (başlangıç) pozisyonu — tarama buradan başlar
-HOME_X = 209.0
+HOME_X = 215.0
 HOME_Y = -39.0
 HOME_Z = -118.0
 HOME_R = 0.01
@@ -35,9 +35,9 @@ SCAN_Z = HOME_Z
 SCAN_R = HOME_R
 
 # Tarama alanı (mm)
-SCAN_WIDTH  = 100.0   # X ekseninde toplam genişlik (sağa doğru)
-SCAN_HEIGHT = 100.0   # Y ekseninde toplam derinlik (aşağıya doğru, negatif Y)
-STEP_SIZE   = 2.0    # Her satır arasındaki mesafe (mm)
+SCAN_WIDTH  = 80.0   # X ekseninde toplam genişlik (sağa doğru)
+SCAN_HEIGHT = 80.0   # Y ekseninde toplam derinlik (aşağıya doğru, negatif Y)
+STEP_SIZE   = 5.0    # Her satır arasındaki mesafe (mm)
 
 # Hareket hızı ve ivmesi (1-100)
 VELOCITY     = 50
@@ -116,32 +116,112 @@ def capture_image(cap: cv2.VideoCapture, save_path: str) -> bool:
     return True
 
 
-def move_and_wait(robot: Dobot, x: float, y: float, z: float, r: float,
-                  retries: int = 3, retry_delay: float = 0.5) -> bool:
+def get_current_position(robot: Dobot):
+    """Returns current (x, y, z, r) or None on failure."""
+    try:
+        pose = robot.pose()
+        return pose[0], pose[1], pose[2], pose[3]  # x, y, z, r
+    except Exception as e:
+        print(f"[WARN] Pozisyon okunamadı: {e}")
+        return None
+
+
+def move_and_wait(robot: Dobot,
+                  x: float, y: float, z: float, r: float,
+                  retries: int = 5,
+                  command_delay: float = 0.05,
+                  settle_time: float = 0.2,
+                  timeout: float = 8.0,
+                  poll_interval: float = 0.1,
+                  position_tolerance: float = 0.8) -> bool:
     """
-    Robotu belirtilen konuma taşır.
-    Limit hatası veya başka hata olursa False döner, program devam eder.
+    Endüstriyel stabil hareket fonksiyonu.
+
+    Özellikler:
+    - Komut retry mekanizması
+    - Gerçek hareket kontrolü
+    - Hedefe ulaşma doğrulaması (distance check)
+    - Timeout koruması
+    - Hata durumunda güvenli FAIL
+
+    Returns:
+        True  -> Hedefe ulaşıldı
+        False -> Ulaşılamadı (capture SKIP edilmeli)
     """
+
+    # --- Başlangıç pozisyonu ---
+    start_pos = get_current_position(robot)
+    if start_pos is None:
+        print("[ERROR] Başlangıç pozisyonu okunamadı.")
+        return False
+
+    # --- Komutu gönder (retry ile) ---
+    command_sent = False
+
     for attempt in range(1, retries + 1):
         try:
-            robot.move_to(x, y, z, r, wait=True)
-            return True
-        except AttributeError as e:
-            if attempt < retries:
-                print(f"[WARN] move_to hatası (deneme {attempt}/{retries}): {e} — tekrar deneniyor...")
-                time.sleep(retry_delay)
-            else:
-                print(f"[WARN] move_to {retries} denemede başarısız, wait=False ile devam.")
-                try:
-                    robot.move_to(x, y, z, r, wait=False)
-                    time.sleep(1.5)
-                    return True
-                except Exception as e2:
-                    print(f"[SKIP] Nokta atlanıyor X={x}, Y={y}: {e2}")
-                    return False
+            robot.move_to(x, y, z, r, wait=False)
+            command_sent = True
+            time.sleep(command_delay)
+            break
         except Exception as e:
-            print(f"[SKIP] Limit veya bilinmeyen hata, nokta atlanıyor X={x}, Y={y}: {e}")
-            return False
+            print(f"[WARN] move_to başarısız ({attempt}/{retries}): {e}")
+            time.sleep(0.2)
+
+    if not command_sent:
+        print("[FAIL] Komut gönderilemedi.")
+        return False
+
+    # --- Hareket başladı mı kontrol et ---
+    moved = False
+    for _ in range(10):
+        time.sleep(poll_interval)
+        pos = get_current_position(robot)
+        if pos is None:
+            continue
+
+        dist_start = ((pos[0]-start_pos[0])**2 +
+                      (pos[1]-start_pos[1])**2 +
+                      (pos[2]-start_pos[2])**2) ** 0.5
+
+        if dist_start > 0.5:  # robot gerçekten kıpırdadı mı?
+            moved = True
+            break
+
+    if not moved:
+        print("[FAIL] Robot hareket etmedi.")
+        return False
+
+    # --- Hedefe ulaşmayı bekle ---
+    elapsed = 0.0
+
+    while elapsed < timeout:
+        time.sleep(poll_interval)
+        elapsed += poll_interval
+
+        pos = get_current_position(robot)
+        if pos is None:
+            continue
+
+        dist_target = ((pos[0]-x)**2 +
+                       (pos[1]-y)**2 +
+                       (pos[2]-z)**2) ** 0.5
+
+        if dist_target <= position_tolerance:
+            print(f"[OK] Hedefe ulaşıldı (dist={dist_target:.2f} mm)")
+            time.sleep(settle_time)  # titreşim sönsün
+            return True
+
+    # --- Timeout ---
+    pos = get_current_position(robot)
+    if pos:
+        dist_target = ((pos[0]-x)**2 +
+                       (pos[1]-y)**2 +
+                       (pos[2]-z)**2) ** 0.5
+        print(f"[FAIL] Timeout: hedefe ulaşılamadı (dist={dist_target:.2f} mm)")
+    else:
+        print("[FAIL] Timeout + pozisyon okunamadı")
+
     return False
 
 def generate_scan_points(home_x, home_y, width, height, step):
@@ -204,6 +284,7 @@ def main():
     robot.speed(VELOCITY, ACCELERATION)
     print("[INFO] Bağlantı başarılı.")
 
+
     # --- Home pozisyonuna git (tarama buradan başlar) ---
     print(f"[INFO] Home pozisyonuna gidiliyor: X={HOME_X}, Y={HOME_Y}, Z={HOME_Z}, R={HOME_R}")
     move_and_wait(robot, HOME_X, HOME_Y, HOME_Z, HOME_R)
@@ -211,6 +292,9 @@ def main():
 
     # --- Tarama noktalarını hesapla (home'dan başlar) ---
     points = generate_scan_points(HOME_X, HOME_Y, SCAN_WIDTH, SCAN_HEIGHT, STEP_SIZE)
+    # İlk nokta HOME olduğu için atla
+    if points and points[0] == (round(HOME_X, 3), round(HOME_Y, 3)):
+        points = points[1:]
     total = len(points)
     print(f"[INFO] Toplam {total} nokta taranacak.")
     print(f"[INFO] Alan: X(sola) {SCAN_WIDTH} mm x Y(aşağı) {SCAN_HEIGHT} mm, Adım: {STEP_SIZE} mm\n")
@@ -220,25 +304,29 @@ def main():
     with open(log_path, "w", encoding="utf-8") as log_file:
         log_file.write("index,x,y,z,r,image_file\n")
 
-        for i, (x, y) in enumerate(points):
-            print(f"[{i+1:04d}/{total}] Hareket: X={x:.2f}, Y={y:.2f}")
+    for i, (x, y) in enumerate(points):
+        print(f"[{i+1:04d}/{total}] Hareket: X={x:.2f}, Y={y:.2f}")
 
-            # Robotu taşı
-            move_and_wait(robot, x, y, SCAN_Z, SCAN_R)
+        moved = move_and_wait(robot, x, y, SCAN_Z, SCAN_R)
 
-            # Yerleşme süresi
-            time.sleep(CAPTURE_DELAY)
+        if not moved:
+            print("         → NOKTA ATLADI (hareket başarısız)")
+            continue
 
-            # Görüntü kaydet
-            img_name = f"img_{i+1:04d}_x{x:.1f}_y{y:.1f}.jpg"
-            img_path = os.path.join(save_dir, img_name)
-            success = capture_image(cap, img_path)
+        time.sleep(CAPTURE_DELAY)
 
-            status = "OK" if success else "FAIL"
-            print(f"         → Görüntü: {img_name} [{status}]")
+        # ✅ SADECE BAŞARILIYSA ARTIR
+        img_index += 1
 
-            # Log yaz
-            log_file.write(f"{i+1},{x},{y},{SCAN_Z},{SCAN_R},{img_name}\n")
+        img_name = f"img_{img_index:04d}_x{x:.1f}_y{y:.1f}.jpg"
+        img_path = os.path.join(save_dir, img_name)
+
+        success = capture_image(cap, img_path)
+
+        status = "OK" if success else "FAIL"
+        print(f"         → Görüntü: {img_name} [{status}]")
+
+        log_file.write(f"{img_index},{x},{y},{SCAN_Z},{SCAN_R},{img_name}\n")
 
     # --- Temizlik ---
     cap.release()
