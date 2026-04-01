@@ -17,20 +17,13 @@ import os
 from datetime import datetime
 from pydobot import Dobot
 
-# ─────────────────────────────────────────────
-#  AYARLAR — buradan değiştirin
-# ─────────────────────────────────────────────
-
-# Dobot seri port 
 DOBOT_PORT = "COM3"
 
-# Home (başlangıç) pozisyonu — tarama buradan başlar
 HOME_X = 215.0
 HOME_Y = -39.0
 HOME_Z = -118.0
 HOME_R = 0.01
 
-# Sabit Z ve R değerleri (tarama boyunca sabit kalır)
 SCAN_Z = HOME_Z
 SCAN_R = HOME_R
 
@@ -44,15 +37,11 @@ VELOCITY     = 50
 ACCELERATION = 50
 
 # Kamera (OBS Virtual Camera)
-CAMERA_INDEX = 1      # Birden fazla kamera varsa 1, 2 ... deneyin
+CAMERA_INDEX = 1    
 CAPTURE_DELAY = 0.5   # Her noktada görüntü almadan önce bekleme süresi (saniye)
 
-# Görüntü kayıt klasörü
 OUTPUT_DIR = "scan_images"
 
-# ─────────────────────────────────────────────
-#  YARDIMCI FONKSİYONLAR
-# ─────────────────────────────────────────────
 
 def setup_output_dir(base_dir: str) -> str:
     """Zaman damgalı alt klasör oluşturur."""
@@ -64,10 +53,6 @@ def setup_output_dir(base_dir: str) -> str:
 
 
 def open_camera(index: int) -> cv2.VideoCapture:
-    """
-    OBS Virtual Camera'yı açar.
-    Sırasıyla farklı backend'leri dener: MSMF → DSHOW → varsayılan.
-    """
     backends = [
         (cv2.CAP_MSMF,  "MSMF"),   # OBS Virtual Camera için en uyumlu
         (cv2.CAP_DSHOW, "DSHOW"),
@@ -90,20 +75,6 @@ def open_camera(index: int) -> cv2.VideoCapture:
                 print(f"[WARN] Kamera {index} açıldı ama frame okunamadı (backend: {name}), sonraki deneniyor...")
         else:
             print(f"[WARN] Kamera {index} açılamadı (backend: {name}), sonraki deneniyor...")
-
-    # Hiçbir backend çalışmadı — mevcut kamera index'lerini listele
-    print("\n[INFO] Mevcut kameralar taranıyor...")
-    for i in range(5):
-        test = cv2.VideoCapture(i, cv2.CAP_MSMF)
-        if test is not None and test.isOpened():
-            print(f"  → Kamera index {i} mevcut")
-            test.release()
-
-    raise RuntimeError(
-        f"Kamera {index} hiçbir backend ile açılamadı.\n"
-        "Yukarıdaki mevcut kamera index'lerinden birini CAMERA_INDEX olarak ayarlayın.\n"
-        "OBS'de Virtual Camera'nın başlatıldığından emin olun."
-    )
 
 
 def capture_image(cap: cv2.VideoCapture, save_path: str) -> bool:
@@ -128,36 +99,26 @@ def get_current_position(robot: Dobot):
 
 def move_and_wait(robot: Dobot,
                   x: float, y: float, z: float, r: float,
-                  retries: int = 5,
-                  command_delay: float = 0.05,
-                  settle_time: float = 0.2,
+                  retries: int = 3,
+                  command_delay: float = 0.5,
+                  settle_time: float = 0.3,
                   timeout: float = 8.0,
-                  poll_interval: float = 0.1,
-                  position_tolerance: float = 0.8) -> bool:
-    """
-    Endüstriyel stabil hareket fonksiyonu.
+                  poll_interval: float = 0.4,
+                  position_tolerance: float = 2.5) -> bool:
 
-    Özellikler:
-    - Komut retry mekanizması
-    - Gerçek hareket kontrolü
-    - Hedefe ulaşma doğrulaması (distance check)
-    - Timeout koruması
-    - Hata durumunda güvenli FAIL
-
-    Returns:
-        True  -> Hedefe ulaşıldı
-        False -> Ulaşılamadı (capture SKIP edilmeli)
-    """
-
-    # --- Başlangıç pozisyonu ---
     start_pos = get_current_position(robot)
     if start_pos is None:
         print("[ERROR] Başlangıç pozisyonu okunamadı.")
         return False
 
-    # --- Komutu gönder (retry ile) ---
-    command_sent = False
+    dist_to_target = ((start_pos[0]-x)**2 +
+                      (start_pos[1]-y)**2 +
+                      (start_pos[2]-z)**2) ** 0.5
+    if dist_to_target <= position_tolerance:
+        print(f"[OK] Zaten hedefe yakın (dist={dist_to_target:.2f} mm)")
+        return True
 
+    command_sent = False
     for attempt in range(1, retries + 1):
         try:
             robot.move_to(x, y, z, r, wait=False)
@@ -166,35 +127,16 @@ def move_and_wait(robot: Dobot,
             break
         except Exception as e:
             print(f"[WARN] move_to başarısız ({attempt}/{retries}): {e}")
-            time.sleep(0.2)
+            time.sleep(0.5)
 
     if not command_sent:
         print("[FAIL] Komut gönderilemedi.")
         return False
+    
+    time.sleep(command_delay)
 
-    # --- Hareket başladı mı kontrol et ---
-    moved = False
-    for _ in range(10):
-        time.sleep(poll_interval)
-        pos = get_current_position(robot)
-        if pos is None:
-            continue
-
-        dist_start = ((pos[0]-start_pos[0])**2 +
-                      (pos[1]-start_pos[1])**2 +
-                      (pos[2]-start_pos[2])**2) ** 0.5
-
-        if dist_start > 0.5:  # robot gerçekten kıpırdadı mı?
-            moved = True
-            break
-
-    if not moved:
-        print("[FAIL] Robot hareket etmedi.")
-        return False
-
-    # --- Hedefe ulaşmayı bekle ---
+    # Hedefe ulaşmayı bekle
     elapsed = 0.0
-
     while elapsed < timeout:
         time.sleep(poll_interval)
         elapsed += poll_interval
@@ -209,19 +151,10 @@ def move_and_wait(robot: Dobot,
 
         if dist_target <= position_tolerance:
             print(f"[OK] Hedefe ulaşıldı (dist={dist_target:.2f} mm)")
-            time.sleep(settle_time)  # titreşim sönsün
+            time.sleep(settle_time)
             return True
-
-    # --- Timeout ---
-    pos = get_current_position(robot)
-    if pos:
-        dist_target = ((pos[0]-x)**2 +
-                       (pos[1]-y)**2 +
-                       (pos[2]-z)**2) ** 0.5
-        print(f"[FAIL] Timeout: hedefe ulaşılamadı (dist={dist_target:.2f} mm)")
-    else:
-        print("[FAIL] Timeout + pozisyon okunamadı")
-
+    
+    print(f"[FAIL] Timeout")
     return False
 
 def generate_scan_points(home_x, home_y, width, height, step):
@@ -267,25 +200,17 @@ def generate_scan_points(home_x, home_y, width, height, step):
  
     return points
 
-# ─────────────────────────────────────────────
-#  ANA FONKSİYON
-# ─────────────────────────────────────────────
 
 def main():
-    # --- Çıktı klasörü ---
     save_dir = setup_output_dir(OUTPUT_DIR)
 
-    # --- Kamerayı aç ---
     cap = open_camera(CAMERA_INDEX)
 
-    # --- Robotu bağla ---
     print(f"[INFO] Dobot'a bağlanılıyor: {DOBOT_PORT}")
     robot = Dobot(port=DOBOT_PORT, verbose=False)
     robot.speed(VELOCITY, ACCELERATION)
     print("[INFO] Bağlantı başarılı.")
 
-
-    # --- Home pozisyonuna git (tarama buradan başlar) ---
     print(f"[INFO] Home pozisyonuna gidiliyor: X={HOME_X}, Y={HOME_Y}, Z={HOME_Z}, R={HOME_R}")
     
     home_reached = move_and_wait(robot, HOME_X, HOME_Y, HOME_Z, HOME_R)
@@ -297,7 +222,6 @@ def main():
     
     print("[INFO] Home pozisyonuna ulaşıldı. Tarama başlıyor...\n")
 
-    # --- Tarama noktalarını hesapla (home'dan başlar) ---
     points = generate_scan_points(HOME_X, HOME_Y, SCAN_WIDTH, SCAN_HEIGHT, STEP_SIZE)
     # İlk nokta HOME olduğu için atla
     if points and points[0] == (round(HOME_X, 3), round(HOME_Y, 3)):
@@ -306,10 +230,8 @@ def main():
     print(f"[INFO] Toplam {total} nokta taranacak.")
     print(f"[INFO] Alan: X(sola) {SCAN_WIDTH} mm x Y(aşağı) {SCAN_HEIGHT} mm, Adım: {STEP_SIZE} mm\n")
 
-    # --- Tarama döngüsü ---
-# --- Tarama döngüsü ---
     log_path = os.path.join(save_dir, "scan_log.csv")
-    img_index = 0  # ← EKLENDİ
+    img_index = 0 
 
     with open(log_path, "w", encoding="utf-8") as log_file:
         log_file.write("index,x,y,z,r,image_file\n")
@@ -337,17 +259,12 @@ def main():
 
             log_file.write(f"{img_index},{x},{y},{SCAN_Z},{SCAN_R},{img_name}\n")
 
-    # --- Temizlik ---
     cap.release()
     robot.close()
     print(f"\n[INFO] Tarama tamamlandı. {total} nokta tarandı.")
     print(f"[INFO] Görüntüler: {save_dir}")
     print(f"[INFO] Log dosyası: {log_path}")
 
-
-# ─────────────────────────────────────────────
-#  ÇALIŞTIR
-# ─────────────────────────────────────────────
 
 if __name__ == "__main__":
     try:
