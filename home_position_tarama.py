@@ -37,7 +37,7 @@ SCAN_R = HOME_R
 # Tarama alanı (mm)
 SCAN_WIDTH  = 80.0   # X ekseninde toplam genişlik (sağa doğru)
 SCAN_HEIGHT = 80.0   # Y ekseninde toplam derinlik (aşağıya doğru, negatif Y)
-STEP_SIZE   = 5.0    # Her satır arasındaki mesafe (mm)
+STEP_SIZE   = 2.0    # Her satır arasındaki mesafe (mm)
 
 # Hareket hızı ve ivmesi (1-100)
 VELOCITY     = 50
@@ -287,7 +287,14 @@ def main():
 
     # --- Home pozisyonuna git (tarama buradan başlar) ---
     print(f"[INFO] Home pozisyonuna gidiliyor: X={HOME_X}, Y={HOME_Y}, Z={HOME_Z}, R={HOME_R}")
-    move_and_wait(robot, HOME_X, HOME_Y, HOME_Z, HOME_R)
+    
+    home_reached = move_and_wait(robot, HOME_X, HOME_Y, HOME_Z, HOME_R)
+    
+    if not home_reached:
+        cap.release()
+        robot.close()
+        raise RuntimeError("Home pozisyonuna ulaşılamadı. Tarama iptal edildi.")
+    
     print("[INFO] Home pozisyonuna ulaşıldı. Tarama başlıyor...\n")
 
     # --- Tarama noktalarını hesapla (home'dan başlar) ---
@@ -300,33 +307,35 @@ def main():
     print(f"[INFO] Alan: X(sola) {SCAN_WIDTH} mm x Y(aşağı) {SCAN_HEIGHT} mm, Adım: {STEP_SIZE} mm\n")
 
     # --- Tarama döngüsü ---
+# --- Tarama döngüsü ---
     log_path = os.path.join(save_dir, "scan_log.csv")
+    img_index = 0  # ← EKLENDİ
+
     with open(log_path, "w", encoding="utf-8") as log_file:
         log_file.write("index,x,y,z,r,image_file\n")
 
-    for i, (x, y) in enumerate(points):
-        print(f"[{i+1:04d}/{total}] Hareket: X={x:.2f}, Y={y:.2f}")
+        for i, (x, y) in enumerate(points):  # ← with bloğunun İÇİNE alındı
+            print(f"[{i+1:04d}/{total}] Hareket: X={x:.2f}, Y={y:.2f}")
 
-        moved = move_and_wait(robot, x, y, SCAN_Z, SCAN_R)
+            moved = move_and_wait(robot, x, y, SCAN_Z, SCAN_R)
 
-        if not moved:
-            print("         → NOKTA ATLADI (hareket başarısız)")
-            continue
+            if not moved:
+                print("         → NOKTA ATLADI (hareket başarısız)")
+                continue
 
-        time.sleep(CAPTURE_DELAY)
+            time.sleep(CAPTURE_DELAY)
 
-        # ✅ SADECE BAŞARILIYSA ARTIR
-        img_index += 1
+            img_index += 1
 
-        img_name = f"img_{img_index:04d}_x{x:.1f}_y{y:.1f}.jpg"
-        img_path = os.path.join(save_dir, img_name)
+            img_name = f"img_{img_index:04d}_x{x:.1f}_y{y:.1f}.jpg"
+            img_path = os.path.join(save_dir, img_name)
 
-        success = capture_image(cap, img_path)
+            success = capture_image(cap, img_path)
 
-        status = "OK" if success else "FAIL"
-        print(f"         → Görüntü: {img_name} [{status}]")
+            status = "OK" if success else "FAIL"
+            print(f"         → Görüntü: {img_name} [{status}]")
 
-        log_file.write(f"{img_index},{x},{y},{SCAN_Z},{SCAN_R},{img_name}\n")
+            log_file.write(f"{img_index},{x},{y},{SCAN_Z},{SCAN_R},{img_name}\n")
 
     # --- Temizlik ---
     cap.release()
