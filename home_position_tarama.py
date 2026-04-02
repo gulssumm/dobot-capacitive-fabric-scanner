@@ -1,14 +1,6 @@
 """
-Dobot Magician - Raster Tarama + OBS Virtual Camera Görüntü Kayıt
-==================================================================
-Gereksinimler:
-    pip install pydobot opencv-python
-
 OBS Ayarı:
     OBS → Tools → Virtual Camera → Start Virtual Camera
-
-Kullanım:
-    python dobot_raster_scan.py
 """
 
 import cv2
@@ -40,15 +32,17 @@ ACCELERATION = 50
 CAMERA_INDEX = 1    
 CAPTURE_DELAY = 1.0   # Her noktada görüntü almadan önce bekleme süresi (saniye)
 
+TYPE = "STELLA101"
+DESIGN = "01-06"
+COMPOSITION = "97CO_3LYC"
 OUTPUT_DIR = "scan_images"
 
 
 def setup_output_dir(base_dir: str) -> str:
-    """Zaman damgalı alt klasör oluşturur."""
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    path = os.path.join(base_dir, f"scan_{timestamp}")
+    folder_name = f"{TYPE}_{DESIGN}_{COMPOSITION}"
+    path = os.path.join(base_dir, folder_name)
     os.makedirs(path, exist_ok=True)
-    print(f"[INFO] Görüntüler kaydedilecek: {path}")
+    print(f"Görüntüler kaydedilecek: {path}")
     return path
 
 
@@ -60,7 +54,7 @@ def open_camera(index: int) -> cv2.VideoCapture:
     ]
 
     for backend, name in backends:
-        print(f"[INFO] Kamera {index} deneniyor (backend: {name})...")
+        print(f"Kamera {index} deneniyor (backend: {name})...")
         cap = cv2.VideoCapture(index, backend)
         if cap is not None and cap.isOpened():
             ret, frame = cap.read()
@@ -76,13 +70,13 @@ def open_camera(index: int) -> cv2.VideoCapture:
                 cap.set(cv2.CAP_PROP_AUTO_WB, 0)
                 cap.set(cv2.CAP_PROP_WB_TEMPERATURE, 4500)
 
-                print(f"[INFO] Kamera {index} açıldı (backend: {name}).")
+                print(f"Kamera {index} açıldı (backend: {name}).")
                 return cap
             else:
                 cap.release()
-                print(f"[WARN] Kamera {index} açıldı ama frame okunamadı (backend: {name}), sonraki deneniyor...")
+                print(f"Kamera {index} açıldı ama frame okunamadı (backend: {name}), sonraki deneniyor...")
         else:
-            print(f"[WARN] Kamera {index} açılamadı (backend: {name}), sonraki deneniyor...")
+            print(f"Kamera {index} açılamadı (backend: {name}), sonraki deneniyor...")
 
 
 def capture_image(cap: cv2.VideoCapture, save_path: str) -> bool:
@@ -92,13 +86,13 @@ def capture_image(cap: cv2.VideoCapture, save_path: str) -> bool:
 
     ret, frame = cap.read()
     if not ret or frame is None:
-        print(f"[WARN] Görüntü alınamadı: {save_path}")
+        print(f"Görüntü alınamadı: {save_path}")
         return False
 
     # Netlik skoru (debug)
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     score = cv2.Laplacian(gray, cv2.CV_64F).var()
-    print(f"         → Netlik skoru: {score:.1f}  {'[BULANIK]' if score < 100 else '[OK]'}")
+    print(f"Netlik skoru: {score:.1f}  {'[BULANIK]' if score < 100 else '[OK]'}")
 
     cv2.imwrite(save_path, frame, [cv2.IMWRITE_JPEG_QUALITY, 95])
     return True
@@ -110,7 +104,7 @@ def get_current_position(robot: Dobot):
         pose = robot.pose()
         return pose[0], pose[1], pose[2], pose[3]  # x, y, z, r
     except Exception as e:
-        print(f"[WARN] Pozisyon okunamadı: {e}")
+        print(f"Pozisyon okunamadı: {e}")
         return None
 
 
@@ -125,7 +119,7 @@ def move_and_wait(robot, x, y, z, r,
 
     start_pos = get_current_position(robot)
     if start_pos is None:
-        print("[ERROR] Başlangıç pozisyonu okunamadı.")
+        print("Başlangıç pozisyonu okunamadı.")
         return False
 
     dist_to_target = ((start_pos[0]-x)**2 +
@@ -143,11 +137,11 @@ def move_and_wait(robot, x, y, z, r,
             time.sleep(command_delay)
             break
         except Exception as e:
-            print(f"[WARN] move_to başarısız ({attempt}/{retries}): {e}")
+            print(f"move_to başarısız ({attempt}/{retries}): {e}")
             time.sleep(0.5)
 
     if not command_sent:
-        print("[FAIL] Komut gönderilemedi.")
+        print("Komut gönderilemedi.")
         return False
     
 
@@ -222,12 +216,12 @@ def main():
 
     cap = open_camera(CAMERA_INDEX)
 
-    print(f"[INFO] Dobot'a bağlanılıyor: {DOBOT_PORT}")
+    print(f"Dobot'a bağlanılıyor: {DOBOT_PORT}")
     robot = Dobot(port=DOBOT_PORT, verbose=False)
     robot.speed(VELOCITY, ACCELERATION)
-    print("[INFO] Bağlantı başarılı.")
+    print("Bağlantı başarılı.")
 
-    print(f"[INFO] Home pozisyonuna gidiliyor: X={HOME_X}, Y={HOME_Y}, Z={HOME_Z}, R={HOME_R}")
+    print(f"Home pozisyonuna gidiliyor: X={HOME_X}, Y={HOME_Y}, Z={HOME_Z}, R={HOME_R}")
     
     home_reached = move_and_wait(robot, HOME_X, HOME_Y, HOME_Z, HOME_R)
     
@@ -236,12 +230,12 @@ def main():
         robot.close()
         raise RuntimeError("Home pozisyonuna ulaşılamadı. Tarama iptal edildi.")
     
-    print("[INFO] Home pozisyonuna ulaşıldı. Tarama başlıyor...\n")
+    print("Home pozisyonuna ulaşıldı. Tarama başlıyor...\n")
 
     points = generate_scan_points(HOME_X, HOME_Y, SCAN_WIDTH, SCAN_HEIGHT, STEP_SIZE)
     total = len(points)
-    print(f"[INFO] Toplam {total} nokta taranacak.")
-    print(f"[INFO] Alan: X(sola) {SCAN_WIDTH} mm x Y(aşağı) {SCAN_HEIGHT} mm, Adım: {STEP_SIZE} mm\n")
+    print(f"Toplam {total} nokta taranacak.")
+    print(f"Alan: X(sola) {SCAN_WIDTH} mm x Y(aşağı) {SCAN_HEIGHT} mm, Adım: {STEP_SIZE} mm\n")
 
     log_path = os.path.join(save_dir, "scan_log.csv")
     img_index = 0 
@@ -249,13 +243,13 @@ def main():
     with open(log_path, "w", encoding="utf-8") as log_file:
         log_file.write("index,x,y,z,r,image_file\n")
 
-        for i, (x, y) in enumerate(points):  # ← with bloğunun İÇİNE alındı
+        for i, (x, y) in enumerate(points):  
             print(f"[{i+1:04d}/{total}] Hareket: X={x:.2f}, Y={y:.2f}")
 
             moved = move_and_wait(robot, x, y, SCAN_Z, SCAN_R)
 
             if not moved:
-                print("         → NOKTA ATLADI (hareket başarısız)")
+                print("NOKTA ATLADI (hareket başarısız)")
                 continue
 
             time.sleep(CAPTURE_DELAY)
@@ -268,22 +262,22 @@ def main():
             success = capture_image(cap, img_path)
 
             status = "OK" if success else "FAIL"
-            print(f"         → Görüntü: {img_name} [{status}]")
+            print(f"Görüntü: {img_name} [{status}]")
 
             log_file.write(f"{img_index},{x},{y},{SCAN_Z},{SCAN_R},{img_name}\n")
 
     cap.release()
     robot.close()
-    print(f"\n[INFO] Tarama tamamlandı. {total} nokta tarandı.")
-    print(f"[INFO] Görüntüler: {save_dir}")
-    print(f"[INFO] Log dosyası: {log_path}")
+    print(f"\nTarama tamamlandı. {total} nokta tarandı.")
+    print(f"Görüntüler: {save_dir}")
+    print(f"Log dosyası: {log_path}")
 
 
 if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        print("\n[WARN] Kullanıcı tarafından durduruldu.")
+        print("\nKullanıcı tarafından durduruldu.")
     except Exception as e:
-        print(f"\n[ERROR] {e}")
+        print(f"\n{e}")
         raise
