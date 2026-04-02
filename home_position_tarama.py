@@ -38,7 +38,7 @@ ACCELERATION = 50
 
 # Kamera (OBS Virtual Camera)
 CAMERA_INDEX = 1    
-CAPTURE_DELAY = 0.5   # Her noktada görüntü almadan önce bekleme süresi (saniye)
+CAPTURE_DELAY = 1.0   # Her noktada görüntü almadan önce bekleme süresi (saniye)
 
 OUTPUT_DIR = "scan_images"
 
@@ -63,11 +63,19 @@ def open_camera(index: int) -> cv2.VideoCapture:
         print(f"[INFO] Kamera {index} deneniyor (backend: {name})...")
         cap = cv2.VideoCapture(index, backend)
         if cap is not None and cap.isOpened():
-            # Test frame — bazı backend'ler isOpened() True döner ama okuyamaz
             ret, frame = cap.read()
             if ret and frame is not None:
                 cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
                 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+
+                # Otomatik ayarları kapat — sabit görüntü kalitesi için
+                cap.set(cv2.CAP_PROP_AUTOFOCUS, 0)
+                cap.set(cv2.CAP_PROP_FOCUS, 50)          # 0-255, kameraya göre ayarla
+                cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)   # 1=manuel, 3=otomatik
+                cap.set(cv2.CAP_PROP_EXPOSURE, -6)       # kameraya göre ayarla
+                cap.set(cv2.CAP_PROP_AUTO_WB, 0)
+                cap.set(cv2.CAP_PROP_WB_TEMPERATURE, 4500)
+
                 print(f"[INFO] Kamera {index} açıldı (backend: {name}).")
                 return cap
             else:
@@ -78,12 +86,21 @@ def open_camera(index: int) -> cv2.VideoCapture:
 
 
 def capture_image(cap: cv2.VideoCapture, save_path: str) -> bool:
-    """Kameradan bir kare okur ve kaydeder."""
+    # Buffer'daki eski kareleri temizle
+    for _ in range(5):
+        cap.grab()
+
     ret, frame = cap.read()
     if not ret or frame is None:
         print(f"[WARN] Görüntü alınamadı: {save_path}")
         return False
-    cv2.imwrite(save_path, frame)
+
+    # Netlik skoru (debug)
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    score = cv2.Laplacian(gray, cv2.CV_64F).var()
+    print(f"         → Netlik skoru: {score:.1f}  {'[BULANIK]' if score < 100 else '[OK]'}")
+
+    cv2.imwrite(save_path, frame, [cv2.IMWRITE_JPEG_QUALITY, 95])
     return True
 
 
@@ -97,14 +114,14 @@ def get_current_position(robot: Dobot):
         return None
 
 
-def move_and_wait(robot: Dobot,
-                  x: float, y: float, z: float, r: float,
-                  retries: int = 3,
-                  command_delay: float = 0.5,
-                  settle_time: float = 0.3,
-                  timeout: float = 8.0,
-                  poll_interval: float = 0.4,
-                  position_tolerance: float = 2.5) -> bool:
+def move_and_wait(robot, x, y, z, r,
+                  retries=3,
+                  command_delay=0.5,
+                  settle_time=0.5,      # 0.3 → 0.5
+                  timeout=12.0,         # 8.0 → 12.0
+                  poll_interval=0.3,    # 0.4 → 0.3 (daha sık kontrol)
+                  position_tolerance=3.5):  # 2.5 → 3.5
+    
 
     start_pos = get_current_position(robot)
     if start_pos is None:
@@ -116,7 +133,7 @@ def move_and_wait(robot: Dobot,
                       (start_pos[2]-z)**2) ** 0.5
     if dist_to_target <= position_tolerance:
         print(f"[OK] Zaten hedefe yakın (dist={dist_to_target:.2f} mm)")
-        return True
+
 
     command_sent = False
     for attempt in range(1, retries + 1):
@@ -133,7 +150,6 @@ def move_and_wait(robot: Dobot,
         print("[FAIL] Komut gönderilemedi.")
         return False
     
-    time.sleep(command_delay)
 
     # Hedefe ulaşmayı bekle
     elapsed = 0.0
@@ -223,9 +239,6 @@ def main():
     print("[INFO] Home pozisyonuna ulaşıldı. Tarama başlıyor...\n")
 
     points = generate_scan_points(HOME_X, HOME_Y, SCAN_WIDTH, SCAN_HEIGHT, STEP_SIZE)
-    # İlk nokta HOME olduğu için atla
-    if points and points[0] == (round(HOME_X, 3), round(HOME_Y, 3)):
-        points = points[1:]
     total = len(points)
     print(f"[INFO] Toplam {total} nokta taranacak.")
     print(f"[INFO] Alan: X(sola) {SCAN_WIDTH} mm x Y(aşağı) {SCAN_HEIGHT} mm, Adım: {STEP_SIZE} mm\n")
