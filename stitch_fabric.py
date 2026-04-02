@@ -1,6 +1,7 @@
 """
-Fabric Image Stitcher — Satir Bazli (Dusuk RAM)
-Dosya formati: img_0001_x215.0_y-37.0.jpg
+Fabric Image Stitcher — Koordinatsiz
+Ayni X degeri = ayni satir → yan yana birlestir
+Satirlari alt alta diz → final
 """
 
 import re
@@ -12,195 +13,126 @@ import cv2
 import numpy as np
 
 # ─── PARAMETRELER ─────────────────────────────────────────────────────────────
-INPUT_DIR    = Path(r"C:\Users\Aidata\DOBOT\scan_images\scan_20260401_134335")
+INPUT_DIR    = Path(r"C:\Users\Aidata\DOBOT\scan_images\scan_20260402_135416_eski")
 OUTPUT_DIR   = Path(r"C:\Users\Aidata\DOBOT\output")
 EXT          = "jpg"
-BLEND_PX     = 10
+OVERLAP_PX   = 50
+BLEND_PX     = 20
 JPEG_QUALITY = 92
-
-# PX_PER_MM: otomatik hesaplanir (None birakinca)
-# Elle girmek istersen: PX_PER_MM = 13.0
-PX_PER_MM    = None
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-def parse_filename(path: Path):
+def parse_xy(path: Path):
     m = re.search(r'_x(-?[\d.]+)_y(-?[\d.]+)', path.stem)
     if not m:
-        return None
+        return None, None
     return float(m.group(1)), float(m.group(2))
 
 
-def load_metadata(input_dir: Path, ext: str) -> list:
+def load_images(input_dir: Path, ext: str) -> list:
     files = sorted(input_dir.glob(f"*.{ext}"), key=lambda p: p.stem)
     if not files:
         files = sorted(input_dir.glob(f"*.{ext.upper()}"), key=lambda p: p.stem)
     if not files:
         sys.exit(f"[HATA] '{input_dir}' icinde .{ext} dosyasi bulunamadi.")
-    images, skipped = [], 0
+    images = []
     for f in files:
-        coords = parse_filename(f)
-        if coords is None:
-            skipped += 1
+        x, y = parse_xy(f)
+        if x is None:
             continue
-        images.append({"path": f, "x": coords[0], "y": coords[1]})
-    print(f"[INFO] {len(images)} gorsel yuklendi, {skipped} atlandi.")
+        images.append({"path": f, "x": x, "y": y})
+    print(f"[INFO] {len(images)} gorsel yuklendi.")
     return images
 
 
-def estimate_px_per_mm(images: list, sample_n: int = 20) -> float:
-    """
-    Ayni X kolonunda ardisik Y ciftlerinden phase correlation ile px/mm hesapla.
-    """
-    from skimage.registration import phase_cross_correlation
-
-    by_x = defaultdict(list)
-    for d in images:
-        by_x[d["x"]].append(d)
-
-    measurements = []
-    for x_val, col in by_x.items():
-        col = sorted(col, key=lambda d: d["y"])
-        for i in range(len(col) - 1):
-            if len(measurements) >= sample_n:
-                break
-            dy_mm = abs(col[i+1]["y"] - col[i]["y"])
-            if dy_mm == 0:
-                continue
-            a = cv2.imread(str(col[i]["path"]))
-            b = cv2.imread(str(col[i+1]["path"]))
-            if a is None or b is None:
-                continue
-            ga = cv2.cvtColor(a, cv2.COLOR_BGR2GRAY).astype(np.float32)
-            gb = cv2.cvtColor(b, cv2.COLOR_BGR2GRAY).astype(np.float32)
-            shift, err, _ = phase_cross_correlation(ga, gb, upsample_factor=10)
-            dy_px = abs(float(shift[0]))
-            # Sadece makul aralikta kabul et
-            if err < 0.9 and 2 < dy_px < a.shape[0] * 0.95:
-                measurements.append(dy_px / dy_mm)
-                print(f"  Olcum: dy={dy_px:.1f}px / {dy_mm}mm = {dy_px/dy_mm:.2f} px/mm")
-        if len(measurements) >= sample_n:
-            break
-
-    if not measurements:
-        print("[UYARI] px/mm otomatik tespiti basarisiz — varsayilan 13.0 kullaniliyor.")
-        print("        Elle ayarlamak icin: PX_PER_MM = <deger> (kodun ustunde)")
-        return 13.0
-
-    val = float(np.median(measurements))
-    print(f"[INFO] px/mm = {val:.2f}  ({len(measurements)} olcumden medyan)")
-    return val
+def blend_h(left: np.ndarray, right: np.ndarray, overlap: int) -> np.ndarray:
+    """Yatay: left sagina right yapistir, overlap blend et."""
+    if overlap <= 0:
+        return np.concatenate([left, right], axis=1)
+    ov = min(overlap, left.shape[1], right.shape[1])
+    ramp = np.linspace(0, 1, ov, dtype=np.float32)[None, :, None]
+    blended = (left[:, -ov:].astype(np.float32) * (1 - ramp)
+             + right[:, :ov].astype(np.float32) * ramp).astype(np.uint8)
+    return np.concatenate([left[:, :-ov], blended, right[:, ov:]], axis=1)
 
 
-def blend_patch(canvas, weights, patch, py, px, blend_px):
-    h, w = patch.shape[:2]
-    ch, cw = canvas.shape[:2]
-    y1 = min(py + h, ch)
-    x1 = min(px + w, cw)
-    ih, iw = y1 - py, x1 - px
-    if ih <= 0 or iw <= 0:
-        return
-    p = patch[:ih, :iw].astype(np.float32)
-    fade = max(1, min(blend_px, ih // 2, iw // 2))
-    mask = np.ones((ih, iw), dtype=np.float32)
-    if fade > 1:
-        ramp = np.linspace(0, 1, fade, dtype=np.float32)
-        mask[:fade,  :] *= ramp[:, None]
-        mask[-fade:, :] *= ramp[::-1, None]
-        mask[:,  :fade] *= ramp[None, :]
-        mask[:, -fade:] *= ramp[::-1][None, :]
-    m = mask[:, :, None]
-    canvas[py:y1, px:x1]  += p * m
-    weights[py:y1, px:x1] += m
+def blend_v(top: np.ndarray, bottom: np.ndarray, overlap: int) -> np.ndarray:
+    """Dikey: top altina bottom yapistir, overlap blend et."""
+    if overlap <= 0:
+        return np.concatenate([top, bottom], axis=0)
+    ov = min(overlap, top.shape[0], bottom.shape[0])
+    ramp = np.linspace(0, 1, ov, dtype=np.float32)[:, None, None]
+    blended = (top[-ov:].astype(np.float32) * (1 - ramp)
+             + bottom[:ov].astype(np.float32) * ramp).astype(np.uint8)
+    return np.concatenate([top[:-ov], blended, bottom[ov:]], axis=0)
 
 
-def stitch_row(row_images, x_min, canvas_w, img_h, px_per_mm, blend_px):
-    canvas  = np.zeros((img_h, canvas_w, 3), dtype=np.float32)
-    weights = np.zeros((img_h, canvas_w, 1), dtype=np.float32)
-    for meta in row_images:
+def build_row(row_metas: list, overlap: int) -> np.ndarray:
+    """Ayni X'teki goruntuleri Y'ye gore sirala, yan yana birlestir."""
+    row_metas = sorted(row_metas, key=lambda d: d["y"])
+    result = None
+    for meta in row_metas:
         img = cv2.imread(str(meta["path"]))
         if img is None:
+            print(f"  [UYARI] Okunamadi: {meta['path'].name}")
             continue
-        px = int((meta["x"] - x_min) * px_per_mm)
-        blend_patch(canvas, weights, img, 0, px, blend_px)
-    weights = np.clip(weights, 1e-9, None)
-    return np.clip(canvas / weights, 0, 255).astype(np.uint8)
+        result = img if result is None else blend_h(result, img, overlap)
+    return result
 
 
 def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    strips_dir = OUTPUT_DIR / "strips"
-    strips_dir.mkdir(exist_ok=True)
+    rows_dir = OUTPUT_DIR / "rows"
+    rows_dir.mkdir(exist_ok=True)
 
-    images = load_metadata(INPUT_DIR, EXT)
+    images = load_images(INPUT_DIR, EXT)
     if not images:
-        sys.exit("[HATA] Hic gorsel parse edilemedi.")
+        sys.exit("[HATA] Gorsel parse edilemedi.")
 
-    # px/mm belirle
-    px_per_mm = PX_PER_MM
-    if px_per_mm is None:
-        print("[INFO] px/mm otomatik hesaplaniyor...")
-        px_per_mm = estimate_px_per_mm(images)
-
-    # Y'ye gore grupla
-    by_y = defaultdict(list)
+    # X degerine gore satirlara grupla
+    by_x = defaultdict(list)
     for meta in images:
-        by_y[meta["y"]].append(meta)
+        by_x[meta["x"]].append(meta)
 
-    unique_ys = sorted(by_y.keys())
-    x_vals    = [d["x"] for d in images]
-    x_min     = min(x_vals)
-    x_max     = max(x_vals)
+    unique_xs = sorted(by_x.keys())
+    print(f"[INFO] {len(unique_xs)} satir, OVERLAP_PX={OVERLAP_PX}\n")
 
-    sample = cv2.imread(str(images[0]["path"]))
-    if sample is None:
-        sys.exit("[HATA] Ilk gorsel okunamadi.")
-    img_h, img_w = sample.shape[:2]
+    row_paths = []
 
-    canvas_w  = int((x_max - x_min) * px_per_mm) + img_w + 4
-    y_step_mm = unique_ys[1] - unique_ys[0] if len(unique_ys) > 1 else 2.0
-    y_step_px = int(y_step_mm * px_per_mm)
-
-    print(f"\n[INFO] px/mm={px_per_mm:.2f}  |  y_step={y_step_px}px ({y_step_mm}mm)")
-    print(f"[INFO] Gorsel boyutu: {img_w}x{img_h}px")
-    print(f"[INFO] Canvas genisligi: {canvas_w}px")
-    print(f"[INFO] {len(unique_ys)} satir isleniyor...\n")
-
-    strip_paths = []
-
-    for i, y_val in enumerate(unique_ys):
-        row = sorted(by_y[y_val], key=lambda d: d["x"])
-        result = stitch_row(row, x_min, canvas_w, img_h, px_per_mm, BLEND_PX)
-        label = f"{y_val:.1f}".replace("-", "m").replace(".", "_")
-        out_path = strips_dir / f"strip_{i:04d}_y{label}.jpg"
-        cv2.imwrite(str(out_path), result, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
-        strip_paths.append(out_path)
-        if i % 10 == 0 or i == len(unique_ys) - 1:
-            print(f"  [{i+1}/{len(unique_ys)}] y={y_val:.1f}mm -> {out_path.name}")
-
-    # ─── Dikey birlesim ───────────────────────────────────────────────────────
-    print(f"\n[Final] {len(strip_paths)} satir dikey birlestiriliyor...")
-    total_h = y_step_px * (len(unique_ys) - 1) + img_h + 4
-
-    final_canvas  = np.zeros((total_h, canvas_w, 3), dtype=np.float32)
-    final_weights = np.zeros((total_h, canvas_w, 1), dtype=np.float32)
-
-    for i, sp in enumerate(strip_paths):
-        strip = cv2.imread(str(sp))
-        if strip is None:
+    # Her satiri yatay olarak birlestir
+    for i, x_val in enumerate(unique_xs):
+        row = build_row(by_x[x_val], OVERLAP_PX)
+        if row is None:
             continue
-        py = i * y_step_px
-        blend_patch(final_canvas, final_weights, strip, py, 0, BLEND_PX)
-        if i % 10 == 0 or i == len(strip_paths) - 1:
-            print(f"  [{i+1}/{len(strip_paths)}] eklendi")
+        label = f"{x_val:.1f}".replace("-", "m").replace(".", "_")
+        out_path = rows_dir / f"row_{i:04d}_x{label}.jpg"
+        cv2.imwrite(str(out_path), row, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
+        row_paths.append(out_path)
+        if i % 10 == 0 or i == len(unique_xs) - 1:
+            print(f"  [{i+1}/{len(unique_xs)}] x={x_val:.1f} -> {row.shape[1]}x{row.shape[0]}px")
 
-    final_weights = np.clip(final_weights, 1e-9, None)
-    final = np.clip(final_canvas / final_weights, 0, 255).astype(np.uint8)
+    # Satirlari alt alta birlestir
+    print(f"\n[Final] {len(row_paths)} satir alt alta birlestiriliyor...")
+    final = None
+    for idx, rp in enumerate(row_paths):
+        row = cv2.imread(str(rp))
+        if row is None:
+            continue
+        if final is None:
+            final = row
+        else:
+            min_w = min(final.shape[1], row.shape[1])
+            final = blend_v(final[:, :min_w], row[:, :min_w], OVERLAP_PX)
+        if idx % 10 == 0 or idx == len(row_paths) - 1:
+            print(f"  [{idx+1}/{len(row_paths)}] eklendi")
+
+    if final is None:
+        sys.exit("[HATA] Final goruntu olusturulamadi.")
 
     final_path = OUTPUT_DIR / "final_stitched.jpg"
     cv2.imwrite(str(final_path), final, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
     print(f"\n[OK] Final: {final_path}")
-    print(f"     Boyut: {final.shape[1]}x{final.shape[0]} px")
+    print(f"     Boyut : {final.shape[1]}x{final.shape[0]} px")
 
 
 if __name__ == "__main__":
