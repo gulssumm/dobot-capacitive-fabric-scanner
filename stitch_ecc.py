@@ -24,9 +24,10 @@ PYRAMID_LEVELS  = 4                # Laplacian pyramid derinliği (3-6)
 
 def parse_filename(filename):
     stem = Path(filename).stem
-    m = re.search(r'_x(-?\d+)_(\d+)_y(-?\d+)_(\d+)', stem)
+    # Format: img_0001_x215.0_y-39.0
+    m = re.search(r'_x(-?[\d.]+)_y(-?[\d.]+)', stem)
     if m:
-        return float(f"{m.group(1)}.{m.group(2)}"), float(f"{m.group(3)}.{m.group(4)}")
+        return float(m.group(1)), float(m.group(2))
     return None, None
 
 
