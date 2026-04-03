@@ -1,236 +1,210 @@
 import cv2
 import numpy as np
-import os
 from pathlib import Path
 
 # ============================================================
-#  AYARLAR - Buradan düzenleyin
+#  AYARLAR
 # ============================================================
-IMAGE_FOLDER   = r"C:\verilerim\goruntüler"   # Görüntü klasörü
-OUTPUT_PATH    = r"C:\verilerim\panorama.png"  # Çıktı dosyası
-NUM_IMAGES     = 41                            # İlk satır görüntü sayısı
-FILE_EXT       = ".png"                        # Uzantı (.png, .jpg, .tif)
-OVERLAP_RATIO  = 0.15   # Beklenen örtüşme oranı (~%15)
+IMAGE_FOLDER  = r"C:\verilerim\goruntüler"
+OUTPUT_PATH   = r"C:\verilerim\test_birlesim.png"
+FILE_EXT      = ".png"
+OVERLAP_RATIO = 0.15    # Başlangıç tahmini — görüntülerinize göre ayarlayın
 ECC_ITERATIONS = 1000
 ECC_EPSILON    = 1e-6
-WARP_MODE      = cv2.MOTION_TRANSLATION
+FEATHER_WIDTH  = 20     # Seam kenarı yumuşatma genişliği (piksel)
 # ============================================================
 
 
-def load_images(folder, n, ext):
-    files = sorted(Path(folder).glob(f"*{ext}"))[:n]
-    if len(files) < n:
-        print(f"Uyarı: {len(files)} görüntü bulundu, {n} bekleniyor.")
-    images = []
-    for f in files:
-        img = cv2.imread(str(f))
-        if img is None:
-            raise ValueError(f"Görüntü okunamadı: {f}")
-        images.append(img)
-    print(f"{len(images)} görüntü yüklendi.")
-    return images
+def load_two_images(folder, ext):
+    files = sorted(Path(folder).glob(f"*{ext}"))[:2]
+    if len(files) < 2:
+        raise ValueError(f"Klasörde en az 2 görüntü olmalı: {folder}")
+    img0 = cv2.imread(str(files[0]))
+    img1 = cv2.imread(str(files[1]))
+    if img0 is None or img1 is None:
+        raise ValueError("Görüntü okunamadı.")
+    print(f"Yüklendi:\n  [0] {files[0].name}  {img0.shape}\n  [1] {files[1].name}  {img1.shape}")
+    return img0, img1
 
 
 def to_gray32(img):
     return cv2.cvtColor(img, cv2.COLOR_BGR2GRAY).astype(np.float32)
 
 
-def estimate_translation_ecc(img_ref, img_mov, overlap_ratio=0.15,
-                              warp_mode=cv2.MOTION_TRANSLATION,
+def estimate_translation_ecc(img_ref, img_mov,
+                              overlap_ratio=0.15,
                               n_iter=1000, epsilon=1e-6):
-    """ECC ile sadece öteleme matrisini bul, (tx, ty) döndür."""
     h, w = img_ref.shape[:2]
     warp_matrix = np.eye(2, 3, dtype=np.float32)
-    warp_matrix[0, 2] = w * (1.0 - overlap_ratio)
+    warp_matrix[0, 2] = w * (1.0 - overlap_ratio)   # tx başlangıç tahmini
 
-    gray_ref = to_gray32(img_ref)
-    gray_mov = to_gray32(img_mov)
     criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, n_iter, epsilon)
 
     try:
         _, warp_matrix = cv2.findTransformECC(
-            gray_ref, gray_mov,
-            warp_matrix, warp_mode, criteria,
+            to_gray32(img_ref), to_gray32(img_mov),
+            warp_matrix, cv2.MOTION_TRANSLATION, criteria,
             inputMask=None, gaussFiltSize=5
         )
+        print(f"ECC başarılı  →  tx={warp_matrix[0,2]:.2f}  ty={warp_matrix[1,2]:.2f}")
     except cv2.error as e:
-        print(f"  ECC uyarı: {e} — başlangıç tahmini kullanılıyor.")
+        print(f"ECC hata: {e}\nBaşlangıç tahmini kullanılıyor.")
 
     return float(warp_matrix[0, 2]), float(warp_matrix[1, 2])
 
 
-# ------------------------------------------------------------------
-#  MINIMUM COST SEAM  (dynamic programming)
-# ------------------------------------------------------------------
+# ──────────────────────────────────────────────
+#  MINIMUM COST SEAM  (DP)
+# ──────────────────────────────────────────────
 
-def compute_seam_cost(overlap_left, overlap_right):
+def find_min_cost_seam(overlap_left, overlap_right):
     """
-    İki örtüşen bölge arasındaki fark görüntüsünden
-    dikey minimum cost seam hesapla.
-
-    overlap_left  : canvas'tan alınan örtüşme şeridi  (H x W x 3)
-    overlap_right : yeni görüntüden alınan örtüşme şeridi (H x W x 3)
+    İki örtüşen şerit arasında renk farkının minimum olduğu
+    dikey yolu DP ile bul.
     Dönüş: seam_col (H,) — her satır için sütun indeksi
     """
-    diff = (overlap_left.astype(np.float32) - overlap_right.astype(np.float32)) ** 2
-    cost_map = diff.sum(axis=2)  # (H x W) — piksel başına maliyet
+    diff = (overlap_left.astype(np.float32) -
+            overlap_right.astype(np.float32)) ** 2
+    cost = diff.sum(axis=2)          # (H, W)
+    H, W = cost.shape
 
-    H, W = cost_map.shape
-    dp = cost_map.copy()
+    dp   = cost.copy()
+    back = np.zeros((H, W), dtype=np.int32)   # geri iz için
 
-    # Yukarıdan aşağıya DP — her hücreden 3 komşuya geç
-    for row in range(1, H):
-        for col in range(W):
-            left  = dp[row-1, max(col-1, 0)]
-            mid   = dp[row-1, col]
-            right = dp[row-1, min(col+1, W-1)]
-            dp[row, col] += min(left, mid, right)
+    for r in range(1, H):
+        for c in range(W):
+            c_l = max(c - 1, 0)
+            c_r = min(c + 1, W - 1)
+            choices = [dp[r-1, c_l], dp[r-1, c], dp[r-1, c_r]]
+            best    = np.argmin(choices)
+            dp[r, c]   += choices[best]
+            back[r, c]  = c + (best - 1)   # -1, 0, +1 offset
 
-    # En düşük maliyetli sütunu son satırdan başlayarak geri iz sür
-    seam_col = np.zeros(H, dtype=np.int32)
-    seam_col[-1] = int(np.argmin(dp[-1]))
+    # Geri iz sür
+    seam = np.zeros(H, dtype=np.int32)
+    seam[-1] = int(np.argmin(dp[-1]))
+    for r in range(H - 2, -1, -1):
+        seam[r] = int(np.clip(back[r + 1, seam[r + 1]], 0, W - 1))
 
-    for row in range(H-2, -1, -1):
-        prev = seam_col[row+1]
-        candidates = range(max(prev-1, 0), min(prev+2, W))
-        seam_col[row] = min(candidates, key=lambda c: dp[row, c])
-
-    return seam_col
+    return seam
 
 
-def apply_seam_blend(canvas, next_img, tx, ty,
-                     feather_width=15):
+def blend_with_seam(overlap_left, overlap_right, feather_width=20):
     """
-    canvas ile next_img'i optimal seam ile birleştir.
-
-    1. Örtüşen bölgeyi tespit et.
-    2. DP ile minimum cost seam bul (organik dikey sınır).
-    3. Seam boyunca soft feather maskesi uygula.
-    4. Seam solunda canvas, sağında next_img kullan.
-    5. Her iki tarafta da örtüşmeyen alanlar korunur / siyah kalır.
+    Seam boyunca feathering uygula.
+    Seam solunda overlap_left, sağında overlap_right ağırlıklı.
     """
-    tx_int = int(round(tx))
-    ty_int = int(round(ty))
+    H, W = overlap_left.shape[:2]
+    seam = find_min_cost_seam(overlap_left, overlap_right)
 
-    ch, cw = canvas.shape[:2]
-    nh, nw = next_img.shape[:2]
+    # Her satır için seam'e uzaklık bazlı yumuşak maske
+    col_idx = np.tile(np.arange(W, dtype=np.float32), (H, 1))   # (H, W)
+    seam_2d = seam[:, np.newaxis].astype(np.float32)             # (H, 1)
 
-    # Yeni canvas boyutları
-    new_w = max(cw, tx_int + nw)
-    new_h = max(ch, ty_int + nh)
-    new_canvas = np.zeros((new_h, new_w, 3), dtype=np.uint8)
+    dist = col_idx - seam_2d                                      # negatif=sol, pozitif=sağ
+    # Sigmoid benzeri geçiş
+    alpha = np.clip(dist / max(feather_width, 1) * 0.5 + 0.5,
+                    0.0, 1.0)[:, :, np.newaxis]                  # (H, W, 1)
 
-    # Mevcut canvas'ı yeni canvas'a kopyala
-    new_canvas[:ch, :cw] = canvas
+    blended = (overlap_left.astype(np.float32)  * (1.0 - alpha) +
+               overlap_right.astype(np.float32) * alpha).astype(np.uint8)
+    return blended, seam
 
-    # next_img'in canvas içindeki koordinatları
-    x0 = tx_int          # next_img sol kenarı
-    y0 = max(ty_int, 0)
-    x1 = tx_int + nw     # next_img sağ kenarı
-    y1 = ty_int + nh
 
-    # Örtüşme bölgesi (x ekseninde)
-    overlap_x_start = x0           # = tx_int
-    overlap_x_end   = min(cw, x1)  # canvas sağ kenarı ile next_img sağı
+def stitch_two(img_ref, img_mov, tx, ty, feather_width=20):
+    """
+    img_ref (canvas) + img_mov'u optimal seam ile birleştir.
+    Boş alanlar siyah kalır.
+    """
+    tx_i = int(round(tx))
+    ty_i = int(round(ty))
 
-    if overlap_x_end <= overlap_x_start:
-        # Örtüşme yok — direkt yapıştır
-        new_canvas[y0:y0+nh, x0:x0+nw] = next_img
-        return new_canvas
+    rh, rw = img_ref.shape[:2]
+    mh, mw = img_mov.shape[:2]
 
-    overlap_w = overlap_x_end - overlap_x_start  # piksel genişliği
+    # ── Yeni canvas boyutu ──────────────────────────────────
+    new_w = max(rw, tx_i + mw)
+    new_h = max(rh, ty_i + mh)
+    canvas = np.zeros((new_h, new_w, 3), dtype=np.uint8)
 
-    # Örtüşen şeritleri çıkar
-    # Canvas tarafı
-    ov_canvas = new_canvas[y0:y0+nh, overlap_x_start:overlap_x_end].copy()
-    # next_img tarafı (next_img koordinatında overlap başlangıcı = 0)
-    ov_next   = next_img[:nh, :overlap_w].copy()
+    # img_ref'i yerleştir
+    canvas[:rh, :rw] = img_ref
 
-    # Minimum cost seam bul
-    seam_col = compute_seam_cost(ov_canvas, ov_next)  # (H,)
+    # ── Örtüşme bölgesi (x ekseninde) ──────────────────────
+    ov_x0 = tx_i           # örtüşme başlangıcı (canvas koordinatı)
+    ov_x1 = min(rw, tx_i + mw)   # örtüşme bitişi
+    ov_w  = ov_x1 - ov_x0
 
-    # Seam maskesi: 0.0 = canvas kullan, 1.0 = next_img kullan
-    # Seam solunda canvas, sağında next_img; feather ile yumuşat
-    H_ov = ov_canvas.shape[0]
-    mask = np.zeros((H_ov, overlap_w), dtype=np.float32)
+    # img_mov'un canvas içindeki y aralığı
+    mov_y0 = max(ty_i, 0)
+    mov_y1 = ty_i + mh
 
-    for row in range(H_ov):
-        sc = seam_col[row]
-        # Seam sağındaki pikseller next_img'e ait
-        col_range = np.arange(overlap_w, dtype=np.float32)
-        # Sert sınır
-        hard = (col_range >= sc).astype(np.float32)
-        # Feathering: seam etrafında ±feather_width piksel yumuşat
-        dist = col_range - sc
-        soft = np.clip(dist / max(feather_width, 1) * 0.5 + 0.5, 0.0, 1.0)
-        mask[row] = soft
+    print(f"Örtüşme genişliği: {ov_w} piksel  "
+          f"(x: {ov_x0}–{ov_x1},  y: {mov_y0}–{mov_y1})")
 
-    mask3 = mask[:, :, np.newaxis]  # (H, W, 1) — broadcast için
+    if ov_w <= 0:
+        # Örtüşme yok — doğrudan yapıştır
+        print("Uyarı: Örtüşme tespit edilemedi, görüntü doğrudan yapıştırılıyor.")
+        canvas[mov_y0:mov_y1, tx_i:tx_i+mw] = img_mov
+        return canvas
 
-    # Örtüşen bölgeyi blend et
-    blended = (ov_canvas.astype(np.float32) * (1.0 - mask3) +
-               ov_next.astype(np.float32)  * mask3).astype(np.uint8)
+    # ── Örtüşen şeritleri çıkar ────────────────────────────
+    # Canvas (img_ref) tarafındaki şerit
+    ov_h          = mov_y1 - mov_y0
+    strip_ref     = canvas[mov_y0:mov_y1, ov_x0:ov_x1].copy()   # (ov_h, ov_w, 3)
 
-    new_canvas[y0:y0+H_ov, overlap_x_start:overlap_x_end] = blended
+    # img_mov tarafındaki şerit (img_mov'un solundan ov_w kadar)
+    strip_mov     = img_mov[:ov_h, :ov_w].copy()                 # (ov_h, ov_w, 3)
 
-    # next_img'in örtüşme dışında kalan sağ kısmını yapıştır
-    right_start_in_next   = overlap_w
-    right_start_in_canvas = overlap_x_end
-    right_w = nw - right_start_in_next
+    # ── Seam blend ─────────────────────────────────────────
+    blended, seam = blend_with_seam(strip_ref, strip_mov, feather_width)
+    canvas[mov_y0:mov_y1, ov_x0:ov_x1] = blended
+
+    # ── img_mov'un örtüşme dışı (sağ) kısmını yapıştır ────
+    right_mov_x  = ov_w           # img_mov koordinatında
+    right_can_x  = ov_x1          # canvas koordinatında
+    right_w      = mw - right_mov_x
 
     if right_w > 0:
-        new_canvas[y0:y0+nh,
-                   right_start_in_canvas:right_start_in_canvas+right_w] = \
-            next_img[:, right_start_in_next:]
+        canvas[mov_y0:mov_y1,
+               right_can_x:right_can_x + right_w] = img_mov[:ov_h, right_mov_x:]
 
-    return new_canvas
-
-
-# ------------------------------------------------------------------
-#  ANA DÖNGÜ
-# ------------------------------------------------------------------
-
-def build_panorama(images, overlap_ratio, warp_mode, n_iter, epsilon):
-    canvas = images[0].copy()
-
-    for i in range(1, len(images)):
-        print(f"  [{i}/{len(images)-1}] Görüntü {i} hizalanıyor...")
-
-        tx, ty = estimate_translation_ecc(
-            images[i-1], images[i],
-            overlap_ratio=overlap_ratio,
-            warp_mode=warp_mode,
-            n_iter=n_iter,
-            epsilon=epsilon
-        )
-        print(f"         tx={tx:.2f}  ty={ty:.2f}")
-
-        canvas = apply_seam_blend(canvas, images[i], tx, ty,
-                                   feather_width=20)
-        print(f"         Canvas: {canvas.shape[1]}x{canvas.shape[0]}")
+    # ── Seam çizgisini debug için kırmızıya boya (isterseniz kapatın) ──
+    DEBUG_SEAM = True   # False yaparsanız seam çizgisi görünmez
+    if DEBUG_SEAM:
+        for r, c in enumerate(seam):
+            cx = ov_x0 + c
+            cy = mov_y0 + r
+            if 0 <= cy < canvas.shape[0] and 0 <= cx < canvas.shape[1]:
+                canvas[cy, cx] = [0, 0, 255]   # kırmızı
 
     return canvas
 
 
 def main():
     print("=" * 55)
-    print("Panoramik Birleştirme — Graph Cut / Optimal Seam")
+    print("Test: İlk 2 Görüntü — Optimal Seam Birleştirme")
     print("=" * 55)
 
-    images = load_images(IMAGE_FOLDER, NUM_IMAGES, FILE_EXT)
+    img0, img1 = load_two_images(IMAGE_FOLDER, FILE_EXT)
 
-    print("\nHizalama ve birleştirme başlıyor...")
-    panorama = build_panorama(
-        images,
-        overlap_ratio=OVERLAP_RATIO,
-        warp_mode=WARP_MODE,
-        n_iter=ECC_ITERATIONS,
-        epsilon=ECC_EPSILON
-    )
+    tx, ty = estimate_translation_ecc(img0, img1,
+                                       overlap_ratio=OVERLAP_RATIO,
+                                       n_iter=ECC_ITERATIONS,
+                                       epsilon=ECC_EPSILON)
 
-    cv2.imwrite(OUTPUT_PATH, panorama)
-    print(f"\n✓ Panorama kaydedildi: {OUTPUT_PATH}")
-    print(f"  Boyut: {panorama.shape[1]} x {panorama.shape[0]} piksel")
+    result = stitch_two(img0, img1, tx, ty, feather_width=FEATHER_WIDTH)
+
+    cv2.imwrite(OUTPUT_PATH, result)
+    print(f"\n✓ Kaydedildi: {OUTPUT_PATH}")
+    print(f"  Boyut: {result.shape[1]} x {result.shape[0]} piksel")
+
+    # Ekranda önizleme (isteğe bağlı)
+    preview = cv2.resize(result, (min(1600, result.shape[1]),
+                                   min(900,  result.shape[0])))
+    cv2.imshow("Sonuc - ESC ile kapat", preview)
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":
