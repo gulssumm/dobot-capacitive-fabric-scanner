@@ -22,7 +22,7 @@ SCAN_R = HOME_R
 # Tarama alanı (mm)
 SCAN_WIDTH  = 80.0   # X ekseninde toplam genişlik (sağa doğru)
 SCAN_HEIGHT = 80.0   # Y ekseninde toplam derinlik (aşağıya doğru, negatif Y)
-STEP_SIZE   = 2.0    # Her satır arasındaki mesafe (mm)
+STEP_SIZE   = 1.0    # Her satır arasındaki mesafe (mm)
 
 # Hareket hızı ve ivmesi (1-100)
 VELOCITY     = 50
@@ -32,9 +32,9 @@ ACCELERATION = 50
 CAMERA_INDEX = 1    
 CAPTURE_DELAY = 1.0   # Her noktada görüntü almadan önce bekleme süresi (saniye)
 
-TYPE = "STELLA101"
-DESIGN = "01-06"
-COMPOSITION = "97CO_3LYC"
+TYPE = "14307"
+DESIGN = "11"
+COMPOSITION = "%100COTTON"
 OUTPUT_DIR = "scan_images"
 
 
@@ -63,9 +63,9 @@ def open_camera(index: int) -> cv2.VideoCapture:
                 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
                 # Otomatik ayarları kapat — sabit görüntü kalitesi için
-                cap.set(cv2.CAP_PROP_AUTOFOCUS, 0)
-                cap.set(cv2.CAP_PROP_FOCUS, 50)          # 0-255, kameraya göre ayarla
-                cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)   # 1=manuel, 3=otomatik
+                cap.set(cv2.CAP_PROP_AUTOFOCUS, 0) #AF KAPALI
+                cap.set(cv2.CAP_PROP_FOCUS, 1)          # 0-255, kameraya göre ayarla
+                cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)   # 1=manuel, 3=otomatik
                 cap.set(cv2.CAP_PROP_EXPOSURE, -6)       # kameraya göre ayarla
                 cap.set(cv2.CAP_PROP_AUTO_WB, 0)
                 cap.set(cv2.CAP_PROP_WB_TEMPERATURE, 4500)
@@ -92,7 +92,7 @@ def capture_image(cap: cv2.VideoCapture, save_path: str) -> bool:
     # Netlik skoru (debug)
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     score = cv2.Laplacian(gray, cv2.CV_64F).var()
-    print(f"Netlik skoru: {score:.1f}  {'[BULANIK]' if score < 100 else '[OK]'}")
+    print(f"Netlik skoru: {score:.1f}  {'[BULANIK]' if score < 30 else '[OK]'}")
 
     cv2.imwrite(save_path, frame, [cv2.IMWRITE_JPEG_QUALITY, 95])
     return True
