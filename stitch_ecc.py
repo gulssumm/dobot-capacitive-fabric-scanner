@@ -1,233 +1,168 @@
-"""
-Panoramik Satır Stitch — ECC Hizalama + Laplacian Multiband Blending
-"""
-
-import re
 import cv2
 import numpy as np
+import os
 from pathlib import Path
 
-# ─────────────────────────────────────────
-# AYARLAR — BURAYA KENDINIZINKINI YAZIN
-# ─────────────────────────────────────────
-
-INPUT_DIR       = "./images"       # görüntülerin bulunduğu klasör
-X_VALUE         = 215.0            # birleştirilecek satırın x koordinatı
-OUTPUT_PATH     = "./panorama.jpg" # çıktı dosyası
-INITIAL_TX_RATIO = 0.8             # ECC başlangıç tx tahmini (0.0-1.0)
-SIFT_FALLBACK   = True             # ECC başarısızsa SIFT dene
-PYRAMID_LEVELS  = 4                # Laplacian pyramid derinliği (3-6)
-
-# ─────────────────────────────────────────
-# PARSER
-# ─────────────────────────────────────────
-
-def parse_filename(filename):
-    stem = Path(filename).stem
-    # Format: img_0001_x215.0_y-39.0
-    m = re.search(r'_x(-?[\d.]+)_y(-?[\d.]+)', stem)
-    if m:
-        return float(m.group(1)), float(m.group(2))
-    return None, None
+# ============================================================
+#  AYARLAR - Buradan düzenleyin
+# ============================================================
+IMAGE_FOLDER = r"C:\verilerim\goruntüler"   # Görüntülerin bulunduğu klasör
+OUTPUT_PATH  = r"C:\verilerim\panorama.png" # Çıktı dosyası
+NUM_IMAGES   = 41                           # İlk satır: 41 görüntü
+FILE_EXT     = ".png"                       # Dosya uzantısı (.png, .jpg, .tif ...)
+OVERLAP_RATIO = 0.15    # Beklenen örtüşme oranı (başlangıç tahmini için, ~%15)
+ECC_ITERATIONS = 1000   # ECC iterasyon sayısı
+ECC_EPSILON    = 1e-6   # ECC durdurma kriteri
+WARP_MODE = cv2.MOTION_TRANSLATION  # Sadece öteleme (zig-zag tarama için yeterli)
+# ============================================================
 
 
-# ─────────────────────────────────────────
-# HİZALAMA: ECC + SIFT FALLBACK
-# ─────────────────────────────────────────
+def load_images(folder, n, ext):
+    """Klasördeki ilk n görüntüyü sıraya göre yükle."""
+    files = sorted(Path(folder).glob(f"*{ext}"))[:n]
+    if len(files) < n:
+        print(f"Uyarı: {len(files)} görüntü bulundu, {n} bekleniyor.")
+    images = []
+    for f in files:
+        img = cv2.imread(str(f))
+        if img is None:
+            raise ValueError(f"Görüntü okunamadı: {f}")
+        images.append(img)
+    print(f"{len(images)} görüntü yüklendi.")
+    return images
 
-def align_ecc(img_ref, img_new, initial_tx_ratio=0.8):
+
+def to_gray(img):
+    return cv2.cvtColor(img, cv2.COLOR_BGR2GRAY).astype(np.float32)
+
+
+def estimate_translation_ecc(img_ref, img_mov, overlap_ratio=0.15, warp_mode=cv2.MOTION_TRANSLATION,
+                               n_iter=1000, epsilon=1e-6):
+    """
+    ECC ile img_mov'un img_ref'e göre öteleme matrisini bul.
+    overlap_ratio: başlangıç tahmini için örtüşme bölgesi genişliği (görüntü genişliğinin oranı).
+    Dönüş: (tx, ty) piksel cinsinden öteleme
+    """
     h, w = img_ref.shape[:2]
-    g1 = cv2.cvtColor(img_ref, cv2.COLOR_BGR2GRAY)
-    g2 = cv2.cvtColor(img_new, cv2.COLOR_BGR2GRAY)
-    warp = np.eye(2, 3, dtype=np.float32)
-    warp[0, 2] = w * initial_tx_ratio
-    crit = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 200, 1e-5)
+
+    # Başlangıç tahmini: görüntü yan yana, tx = w * (1 - overlap_ratio)
+    warp_matrix = np.eye(2, 3, dtype=np.float32)
+    warp_matrix[0, 2] = w * (1.0 - overlap_ratio)  # tx başlangıç tahmini
+
+    gray_ref = to_gray(img_ref)
+    gray_mov = to_gray(img_mov)
+
+    criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, n_iter, epsilon)
+
     try:
-        _, warp = cv2.findTransformECC(g1, g2, warp, cv2.MOTION_TRANSLATION, crit)
-        return float(warp[0, 2]), float(warp[1, 2])
-    except cv2.error:
-        return None
+        _, warp_matrix = cv2.findTransformECC(
+            gray_ref, gray_mov,
+            warp_matrix, warp_mode, criteria,
+            inputMask=None, gaussFiltSize=5
+        )
+    except cv2.error as e:
+        print(f"  ECC başarısız, başlangıç tahmini kullanılıyor: {e}")
+
+    tx = warp_matrix[0, 2]
+    ty = warp_matrix[1, 2]
+    return tx, ty
 
 
-def align_sift(img_ref, img_new):
-    sift = cv2.SIFT_create()
-    kp1, des1 = sift.detectAndCompute(img_ref, None)
-    kp2, des2 = sift.detectAndCompute(img_new, None)
-    if des1 is None or des2 is None or len(kp1) < 4 or len(kp2) < 4:
-        return None
-    bf = cv2.BFMatcher()
-    matches = bf.knnMatch(des1, des2, k=2)
-    good = [m for m, n in matches if m.distance < 0.75 * n.distance]
-    if len(good) < 10:
-        return None
-    src = np.float32([kp1[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
-    dst = np.float32([kp2[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
-    H, mask = cv2.findHomography(src, dst, cv2.RANSAC, 5.0)
-    if H is None or mask.sum() < 8:
-        return None
-    return float(H[0, 2]), float(H[1, 2])
+def stitch_pair(canvas, canvas_offset_x, next_img, tx, ty):
+    """
+    Mevcut canvas'a next_img'i ECC ötelemesine göre yapıştır.
+    Ortak alan: next_img'in sol kısmı kırpılır (canvas ile örtüşen kısım atılır).
+    Kalan boş alan siyah kalır.
+    
+    canvas_offset_x: canvas içindeki mevcut içeriğin başlangıç x konumu
+    tx: next_img'in canvas koordinatında başladığı x
+    Dönüş: (yeni_canvas, yeni_offset_x)
+    """
+    ch, cw = canvas.shape[:2]
+    nh, nw = next_img.shape[:2]
+
+    # next_img canvas'ta nerede başlıyor?
+    # tx: img_ref -> img_mov ötelemesi; img_mov canvas'ta tx pikselinde başlar
+    next_x_in_canvas = int(round(tx))
+    next_y_in_canvas = int(round(ty))
+
+    # Ortak alan: next_img'in kaç pikseli canvas ile örtüşüyor?
+    overlap_pixels = cw - next_x_in_canvas
+    if overlap_pixels < 0:
+        overlap_pixels = 0
+
+    # next_img'den kırpılacak sol kısım = overlap_pixels
+    crop_x = overlap_pixels  # next_img'in bu kadar solunu at
+    cropped = next_img[:, crop_x:, :]  # ortak alan kırpıldı
+
+    # Yeni canvas genişliği
+    new_width = cw + cropped.shape[1]
+    new_canvas = np.zeros((max(ch, nh + abs(min(next_y_in_canvas, 0))),
+                           new_width, 3), dtype=np.uint8)
+
+    # Mevcut canvas'ı yeni canvas'a kopyala
+    y_off = max(0, next_y_in_canvas) if next_y_in_canvas > 0 else 0
+    # Basit durum: ty ≈ 0 (aynı satır taraması)
+    new_canvas[:ch, :cw] = canvas
+
+    # Kırpılmış next_img'i ekle
+    paste_x = cw  # canvas'ın hemen sağına
+    paste_y = max(0, next_y_in_canvas)
+    h_to_paste = min(cropped.shape[0], new_canvas.shape[0] - paste_y)
+    w_to_paste = cropped.shape[1]
+
+    new_canvas[paste_y:paste_y + h_to_paste, paste_x:paste_x + w_to_paste] = \
+        cropped[:h_to_paste, :w_to_paste]
+
+    return new_canvas
 
 
-def find_alignment(canvas_crop, img_new):
-    result = align_ecc(canvas_crop, img_new, INITIAL_TX_RATIO)
-    if result is not None:
-        return result, "ECC"
-    if SIFT_FALLBACK:
-        result = align_sift(canvas_crop, img_new)
-        if result is not None:
-            return result, "SIFT"
-    w = canvas_crop.shape[1]
-    return (w * INITIAL_TX_RATIO, 0.0), "DEFAULT"
+def build_panorama(images, overlap_ratio, warp_mode, n_iter, epsilon):
+    """Tüm görüntüleri sırayla birleştirerek panorama oluştur."""
+    canvas = images[0].copy()
+    
+    for i in range(1, len(images)):
+        print(f"  [{i}/{len(images)-1}] Görüntü {i} hizalanıyor...")
+        
+        img_ref = images[i - 1]
+        img_mov = images[i]
 
+        tx, ty = estimate_translation_ecc(
+            img_ref, img_mov,
+            overlap_ratio=overlap_ratio,
+            warp_mode=warp_mode,
+            n_iter=n_iter,
+            epsilon=epsilon
+        )
 
-# ─────────────────────────────────────────
-# LAPLACIAN PYRAMID MULTIBAND BLENDING
-# ─────────────────────────────────────────
+        print(f"         tx={tx:.2f}, ty={ty:.2f}")
 
-def build_gaussian_pyramid(img, levels):
-    gp = [img.astype(np.float32)]
-    for _ in range(levels):
-        gp.append(cv2.pyrDown(gp[-1]))
-    return gp
-
-
-def build_laplacian_pyramid(img, levels):
-    gp = build_gaussian_pyramid(img, levels)
-    lp = []
-    for i in range(levels):
-        h, w = gp[i].shape[:2]
-        up = cv2.pyrUp(gp[i + 1], dstsize=(w, h))
-        lp.append(gp[i] - up)
-    lp.append(gp[levels])
-    return lp
-
-
-def multiband_blend(img_left, img_right, mask_left, levels=4):
-    mask_right = 1.0 - mask_left
-    lp_l  = build_laplacian_pyramid(img_left,  levels)
-    lp_r  = build_laplacian_pyramid(img_right, levels)
-    gp_ml = build_gaussian_pyramid(mask_left,  levels)
-    gp_mr = build_gaussian_pyramid(mask_right, levels)
-    blended = []
-    for la, rb, ml, mr in zip(lp_l, lp_r, gp_ml, gp_mr):
-        if ml.ndim == 2:
-            ml = ml[:, :, np.newaxis]
-            mr = mr[:, :, np.newaxis]
-        blended.append(la * ml + rb * mr)
-    result = blended[-1]
-    for b in reversed(blended[:-1]):
-        h, w = b.shape[:2]
-        result = cv2.pyrUp(result, dstsize=(w, h)) + b
-    return result
-
-
-# ─────────────────────────────────────────
-# KANVASA BİRLEŞTİR
-# ─────────────────────────────────────────
-
-def merge_into_canvas(canvas, img_new, overlap_start, overlap_px, h_ref, w_ref):
-    new_area_w = w_ref - overlap_px
-    if new_area_w <= 0:
-        return canvas
-
-    # Kanvası genişlet
-    ext = np.zeros((h_ref, new_area_w, 3), dtype=np.float32)
-    canvas = np.concatenate([canvas, ext], axis=1)
-
-    # Örtüşen bölge: multiband blend
-    if overlap_px > 1:
-        left_strip  = canvas[:, overlap_start:overlap_start + overlap_px].copy()
-        right_strip = img_new[:, :overlap_px].astype(np.float32)
-        alpha  = np.linspace(1.0, 0.0, overlap_px, dtype=np.float32)
-        mask_l = np.repeat(np.tile(alpha, (h_ref, 1))[:, :, np.newaxis], 3, axis=2)
-        lvl    = max(1, min(PYRAMID_LEVELS, int(np.log2(max(overlap_px, 2))) - 1))
-        blended = multiband_blend(left_strip, right_strip, mask_l, levels=lvl)
-        canvas[:, overlap_start:overlap_start + overlap_px] = blended.clip(0, 255)
-
-    # Yeni bölge: direkt kopyala
-    dst_start = overlap_start + overlap_px
-    canvas[:, dst_start:dst_start + new_area_w] = \
-        img_new[:, overlap_px:overlap_px + new_area_w].astype(np.float32)
+        canvas = stitch_pair(canvas, 0, img_mov, tx, ty)
+        print(f"         Canvas boyutu: {canvas.shape[1]}x{canvas.shape[0]}")
 
     return canvas
 
 
-# ─────────────────────────────────────────
-# ANA STİTCH
-# ─────────────────────────────────────────
+def main():
+    print("=" * 50)
+    print("Panoramik Birleştirme (ECC + Kırpma Yöntemi)")
+    print("=" * 50)
 
-def stitch_panoramic():
-    entries = []
-    for f in sorted(Path(INPUT_DIR).glob("*.jpg")):
-        x, y = parse_filename(f.name)
-        if x is not None and abs(x - X_VALUE) < 0.1:
-            entries.append((y, str(f)))
+    images = load_images(IMAGE_FOLDER, NUM_IMAGES, FILE_EXT)
 
-    if not entries:
-        print(f"❌ x={X_VALUE} için görüntü bulunamadı!")
-        return
+    print("\nGörüntüler hizalanıyor ve birleştiriliyor...")
+    panorama = build_panorama(
+        images,
+        overlap_ratio=OVERLAP_RATIO,
+        warp_mode=WARP_MODE,
+        n_iter=ECC_ITERATIONS,
+        epsilon=ECC_EPSILON
+    )
 
-    entries.sort(key=lambda t: t[0])
-    n = len(entries)
-    print(f"✅ {n} görüntü  (x={X_VALUE}, y: {entries[0][0]:.1f} → {entries[-1][0]:.1f})")
+    cv2.imwrite(OUTPUT_PATH, panorama)
+    print(f"\nPanorama kaydedildi: {OUTPUT_PATH}")
+    print(f"Son boyut: {panorama.shape[1]} x {panorama.shape[0]} piksel")
 
-    first = cv2.imread(entries[0][1])
-    if first is None:
-        print("❌ İlk görüntü okunamadı.")
-        return
-
-    h_ref, w_ref = first.shape[:2]
-    print(f"Görüntü boyutu: {w_ref}x{h_ref} | Pyramid levels: {PYRAMID_LEVELS}\n")
-
-    canvas  = first.astype(np.float32)
-    skipped = 0
-
-    for i, (y_val, fpath) in enumerate(entries[1:], start=1):
-        img_new = cv2.imread(fpath)
-        if img_new is None:
-            print(f"  [{i:02d}/{n-1}] ⚠️  Atlandı (okunamadı)")
-            skipped += 1
-            continue
-
-        canvas_w   = canvas.shape[1]
-        crop_start = max(0, canvas_w - w_ref)
-        canvas_crop = canvas[:, crop_start:].astype(np.uint8)
-
-        (tx, ty), method = find_alignment(canvas_crop, img_new)
-
-        overlap_start = crop_start + int(round(tx))
-        overlap_px    = canvas_w - overlap_start
-        new_area_w    = w_ref - overlap_px
-
-        if overlap_px <= 0 or overlap_px >= w_ref or new_area_w <= 0:
-            print(f"  [{i:02d}/{n-1}] ⚠️  Geçersiz örtüşme ({overlap_px}px), atlandı.")
-            skipped += 1
-            continue
-
-        # Dikey hizalama
-        ty_int = int(round(ty))
-        if abs(ty_int) > 0:
-            M = np.float32([[1, 0, 0], [0, 1, -ty_int]])
-            img_new = cv2.warpAffine(img_new, M, (w_ref, h_ref),
-                                     borderMode=cv2.BORDER_REPLICATE)
-
-        canvas = merge_into_canvas(canvas, img_new.astype(np.float32),
-                                   overlap_start, overlap_px, h_ref, w_ref)
-
-        print(f"  [{i:02d}/{n-1}] y={y_val:7.1f}mm | {method:7s} | "
-              f"tx={tx:7.1f}px  ty={ty:+6.1f}px | "
-              f"örtüşme={overlap_px:4d}px | kanvas={canvas.shape[1]:6d}px")
-
-    result = canvas.clip(0, 255).astype(np.uint8)
-    cv2.imwrite(OUTPUT_PATH, result)
-    print(f"\n✅ Kaydedildi : {OUTPUT_PATH}")
-    print(f"   Final boyut : {result.shape[1]} x {result.shape[0]} px")
-    print(f"   Atlanan     : {skipped}/{n-1}")
-
-
-# ─────────────────────────────────────────
-# ÇALIŞTIR
-# ─────────────────────────────────────────
 
 if __name__ == "__main__":
-    stitch_panoramic()
+    main()
