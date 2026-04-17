@@ -20,16 +20,16 @@ SCAN_Z = HOME_Z
 SCAN_R = HOME_R
 
 # Tarama alanı (mm)
-SCAN_WIDTH  = 80.0   # X ekseninde toplam genişlik (sağa doğru)
+SCAN_WIDTH  = 30.0   # X ekseninde toplam genişlik (sağa doğru)
 SCAN_HEIGHT = 80.0   # Y ekseninde toplam derinlik (aşağıya doğru, negatif Y)
-STEP_SIZE   = 1.0    # Her satır arasındaki mesafe (mm)
+STEP_SIZE   = 5.0    # Her satır arasındaki mesafe (mm)
 
 # Hareket hızı ve ivmesi (1-100)
 VELOCITY     = 50
 ACCELERATION = 50
 
 # Kamera (OBS Virtual Camera)
-CAMERA_INDEX = 1    
+CAMERA_INDEX = 0    
 CAPTURE_DELAY = 1.0   # Her noktada görüntü almadan önce bekleme süresi (saniye)
 
 TYPE = "14307"
@@ -63,7 +63,7 @@ def open_camera(index: int) -> cv2.VideoCapture:
                 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
                 # Otomatik ayarları kapat — sabit görüntü kalitesi için
-                cap.set(cv2.CAP_PROP_AUTOFOCUS, 0) #AF KAPALI
+                cap.set(cv2.CAP_PROP_AUTOFOCUS, 1) #AF KAPALI
                 cap.set(cv2.CAP_PROP_FOCUS, 1)          # 0-255, kameraya göre ayarla
                 cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)   # 1=manuel, 3=otomatik
                 cap.set(cv2.CAP_PROP_EXPOSURE, -6)       # kameraya göre ayarla
