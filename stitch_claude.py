@@ -5,12 +5,12 @@ from pathlib import Path
 # ============================================================
 #  SETTINGS
 # ============================================================
-IMAGE_FOLDER    = r"C:\Users\21180\PycharmProjects\scan_20260402_154958_STELLA101"
-OUTPUT_PATH     = r"C:\Users\21180\PycharmProjects\DOBOT_magician\birlesim_beyaz.png"
+IMAGE_FOLDER    = r"C:\Users\21180\PycharmProjects\blue-striped_01_0_unknown"
+OUTPUT_PATH     = r"C:\Users\21180\PycharmProjects\DOBOT_magician\new_stitch.png"
 FILE_EXT        = ".jpg"
 
 # Grid layout — adjust these to match your capture setup
-IMAGES_PER_ROW  = 20       # How many images per row in the grid
+IMAGES_PER_ROW  = 21       # How many images per row in the grid
 # NUM_ROWS is auto-calculated from total image count
 
 # Scan parameters

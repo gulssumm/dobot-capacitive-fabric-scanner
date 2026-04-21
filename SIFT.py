@@ -5,9 +5,9 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-IMG_A = Path(r"C:\Users\Aidata\DOBOT\scan_images\scan_20260402_135416_eski\img_0001_....jpg")
-IMG_B = Path(r"C:\Users\Aidata\DOBOT\scan_images\scan_20260402_135416_eski\img_0002_....jpg")
-OUTPUT_DIR = Path(r"C:\Users\Aidata\DOBOT\output\sift_test")
+IMG_A = Path(r"C:\Users\21180\Documents\TEZ\blue-striped_01_0_unknown\blue-striped_01_0_unknown\img_0001_x215.0_y-39.0.jpg")
+IMG_B = Path(r"C:\Users\21180\Documents\TEZ\blue-striped_01_0_unknown\blue-striped_01_0_unknown\img_0002_x215.0_y-38.5.jpg")
+OUTPUT_DIR = Path(r"C:\Users\21180\PycharmProjects\DOBOT_magician")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 a = cv2.imread(str(IMG_A))
