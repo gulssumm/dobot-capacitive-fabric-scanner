@@ -1,0 +1,258 @@
+"""
+OBS Ayarı:
+    OBS → Tools → Virtual Camera → Start Virtual Camera
+"""
+
+import cv2
+import time
+import os
+from datetime import datetime
+from pydobot import Dobot
+
+DOBOT_PORT = "COM3"
+
+HOME_X = 215.0
+HOME_Y = -39.0
+HOME_Z = -120.0
+HOME_R = 0.01
+
+SCAN_Z = HOME_Z
+SCAN_R = HOME_R
+
+# Tarama alanı (mm)
+SCAN_WIDTH  = 20.0   # X ekseninde toplam genişlik (sağa doğru)
+SCAN_HEIGHT = 20.0   # Y ekseninde toplam derinlik (aşağıya doğru, negatif Y)
+STEP_SIZE   = 0.5    # Her satır arasındaki mesafe (mm)
+
+# Hareket hızı ve ivmesi (1-100)
+VELOCITY     = 50
+ACCELERATION = 50
+
+# Kamera (OBS Virtual Camera)
+CAMERA_INDEX = 1    
+CAPTURE_DELAY = 1.0   # Her noktada görüntü almadan önce bekleme süresi (saniye)
+
+TYPE = "3370" #blue-striped_01 #KAYNAK TEKSTIL
+DESIGN = "12"  #0 #17S5292-05
+COMPOSITION = "%100 COTTON" #unknown #%100 COTTON
+OUTPUT_DIR = "scan_images" 
+
+
+def setup_output_dir(base_dir: str) -> str:
+    folder_name = f"{TYPE}_{DESIGN}_{COMPOSITION}"
+    path = os.path.join(base_dir, folder_name)
+    os.makedirs(path, exist_ok=True)
+    print(f"Görüntüler kaydedilecek: {path}")
+    return path
+
+
+def capture_image(cap: cv2.VideoCapture, save_path: str) -> bool:
+    # Buffer'daki eski kareleri temizle
+    for _ in range(5):
+        cap.grab()
+
+    ret, frame = cap.read()
+    if not ret or frame is None:
+        print(f"Görüntü alınamadı: {save_path}")
+        return False
+
+    # Netlik skoru (debug)
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    score = cv2.Laplacian(gray, cv2.CV_64F).var()
+    print(f"Netlik skoru: {score:.1f}  {'[BULANIK]' if score < 30 else '[OK]'}")
+
+    cv2.imwrite(save_path, frame, [cv2.IMWRITE_JPEG_QUALITY, 95])
+    return True
+
+
+def get_current_position(robot: Dobot):
+    """Returns current (x, y, z, r) or None on failure."""
+    try:
+        pose = robot.pose()
+        return pose[0], pose[1], pose[2], pose[3]  # x, y, z, r
+    except Exception as e:
+        print(f"Pozisyon okunamadı: {e}")
+        return None
+
+
+def move_and_wait(robot, x, y, z, r,
+                  retries=3,
+                  command_delay=0.5,
+                  settle_time=0.5,      # 0.3 → 0.5
+                  timeout=12.0,         # 8.0 → 12.0
+                  poll_interval=0.3,    # 0.4 → 0.3 (daha sık kontrol)
+                  position_tolerance=0.05):  # 2.5 → 3.5
+    
+
+    start_pos = get_current_position(robot)
+    if start_pos is None:
+        print("Başlangıç pozisyonu okunamadı.")
+        return False
+
+    dist_to_target = ((start_pos[0]-x)**2 +
+                      (start_pos[1]-y)**2 +
+                      (start_pos[2]-z)**2) ** 0.5
+    if dist_to_target <= position_tolerance:
+        print(f"[OK] Zaten hedefe yakın (dist={dist_to_target:.2f} mm)")
+
+
+    command_sent = False
+    for attempt in range(1, retries + 1):
+        try:
+            robot.move_to(x, y, z, r, wait=False)
+            command_sent = True
+            time.sleep(command_delay)
+            break
+        except Exception as e:
+            print(f"move_to başarısız ({attempt}/{retries}): {e}")
+            time.sleep(0.5)
+
+    if not command_sent:
+        print("Komut gönderilemedi.")
+        return False
+    
+
+    # Hedefe ulaşmayı bekle
+    elapsed = 0.0
+    while elapsed < timeout:
+        time.sleep(poll_interval)
+        elapsed += poll_interval
+
+        pos = get_current_position(robot)
+        if pos is None:
+            continue
+
+        dist_target = ((pos[0]-x)**2 +
+                       (pos[1]-y)**2 +
+                       (pos[2]-z)**2) ** 0.5
+
+        if dist_target <= position_tolerance:
+            print(f"[OK] Hedefe ulaşıldı (dist={dist_target:.2f} mm)")
+            time.sleep(settle_time)
+            return True
+    
+    print(f"[FAIL] Timeout")
+    return False
+
+def generate_scan_points(home_x, home_y, width, height, step):
+    """
+    Koordinat:
+        X+: ileri
+        X-: geri
+        Y+: sol
+        Y-: sağ
+
+    Başlangıç:
+        Home = sağ üst
+
+    Hareket:
+        - İlk satır: sağ → sol (Y artar)
+        - Sonraki satır: sol → sağ (Y azalır)
+        - Her satır sonrası geri gider (X azalır)
+
+    Alan:
+        X: home_x → home_x - height
+        Y: home_y → home_y + width
+    """
+    points = []
+    x = home_x
+    row = 0
+ 
+    while round(x, 6) >= round(home_x - height, 6):
+        if row % 2 == 0:
+            # sağdan sola → Y artar
+            y = home_y
+            while round(y, 6) <= round(home_y + width, 6):
+                points.append((round(x, 3), round(y, 3)))
+                y = round(y + step, 6)
+        else:
+            # soldan sağa → Y azalır
+            y = home_y + width
+            while round(y, 6) >= round(home_y, 6):
+                points.append((round(x, 3), round(y, 3)))
+                y = round(y - step, 6)
+ 
+        x = round(x - step, 6)   # geri git
+        row += 1
+ 
+    return points
+
+
+def main():
+    save_dir = setup_output_dir(OUTPUT_DIR)
+
+    # Kamerayı başlat (0 varsayılan kameradır)
+    cap = cv2.VideoCapture(1, cv2.CAP_DSHOW)
+
+    if not cap.isOpened():
+        print("Kamera açılamadı!")
+        exit()
+
+    print(f"Dobot'a bağlanılıyor: {DOBOT_PORT}")
+    robot = Dobot(port=DOBOT_PORT, verbose=False)
+    robot.speed(VELOCITY, ACCELERATION)
+    print("Bağlantı başarılı.")
+
+    print(f"Home pozisyonuna gidiliyor: X={HOME_X}, Y={HOME_Y}, Z={HOME_Z}, R={HOME_R}")
+    
+    home_reached = move_and_wait(robot, HOME_X, HOME_Y, HOME_Z, HOME_R)
+    
+    if not home_reached:
+        cap.release()
+        robot.close()
+        raise RuntimeError("Home pozisyonuna ulaşılamadı. Tarama iptal edildi.")
+    
+    print("Home pozisyonuna ulaşıldı. Tarama başlıyor...\n")
+
+    points = generate_scan_points(HOME_X, HOME_Y, SCAN_WIDTH, SCAN_HEIGHT, STEP_SIZE)
+    total = len(points)
+    print(f"Toplam {total} nokta taranacak.")
+    print(f"Alan: X(sola) {SCAN_WIDTH} mm x Y(aşağı) {SCAN_HEIGHT} mm, Adım: {STEP_SIZE} mm\n")
+
+    log_path = os.path.join(save_dir, "scan_log.csv")
+    img_index = 0 
+
+    
+
+    with open(log_path, "w", encoding="utf-8") as log_file:
+        log_file.write("index,x,y,z,r,image_file\n")
+
+        for i, (x, y) in enumerate(points):  
+            print(f"[{i+1:04d}/{total}] Hareket: X={x:.2f}, Y={y:.2f}")
+
+            moved = move_and_wait(robot, x, y, SCAN_Z, SCAN_R)
+
+            if not moved:
+                print("NOKTA ATLADI (hareket başarısız)")
+                continue
+
+            time.sleep(CAPTURE_DELAY)
+
+            img_index += 1
+
+            img_name = f"img_{img_index:04d}_x{x:.1f}_y{y:.1f}.jpg"
+            img_path = os.path.join(save_dir, img_name)
+        
+            
+            success = capture_image(cap, img_path)
+
+            status = "OK" if success else "FAIL"
+            print(f"Görüntü: {img_name} [{status}]")
+
+            log_file.write(f"{img_index},{x},{y},{SCAN_Z},{SCAN_R},{img_name}\n")
+
+    cap.release()
+    robot.close()
+    print(f"\nTarama tamamlandı. {total} nokta tarandı.")
+    print(f"Görüntüler: {save_dir}")
+    print(f"Log dosyası: {log_path}")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\nKullanıcı tarafından durduruldu.")
+    except Exception as e:
+        print(f"\n{e}")
+        raise
