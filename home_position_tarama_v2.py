@@ -13,15 +13,15 @@ DOBOT_PORT = "COM3"
 
 HOME_X = 215.0
 HOME_Y = -39.0
-HOME_Z = -120.0
+HOME_Z = -115.0
 HOME_R = 0.01
 
 SCAN_Z = HOME_Z
 SCAN_R = HOME_R
 
 # Tarama alanı (mm)
-SCAN_WIDTH  = 20.0   # X ekseninde toplam genişlik (sağa doğru)
-SCAN_HEIGHT = 20.0   # Y ekseninde toplam derinlik (aşağıya doğru, negatif Y)
+SCAN_WIDTH  = 10.0   # X ekseninde toplam genişlik (sağa doğru)
+SCAN_HEIGHT = 10.0   # Y ekseninde toplam derinlik (aşağıya doğru, negatif Y)
 STEP_SIZE   = 0.5    # Her satır arasındaki mesafe (mm)
 
 # Hareket hızı ve ivmesi (1-100)
@@ -30,11 +30,11 @@ ACCELERATION = 50
 
 # Kamera (OBS Virtual Camera)
 CAMERA_INDEX = 1    
-CAPTURE_DELAY = 1.0   # Her noktada görüntü almadan önce bekleme süresi (saniye)
+CAPTURE_DELAY = 0.5   # Her noktada görüntü almadan önce bekleme süresi (saniye)
 
-TYPE = "3370" #blue-striped_01 #KAYNAK TEKSTIL
-DESIGN = "12"  #0 #17S5292-05
-COMPOSITION = "%100 COTTON" #unknown #%100 COTTON
+TYPE = "blue_striped" 
+DESIGN = "01"  
+COMPOSITION = "black_color_fleck_deneme2"
 OUTPUT_DIR = "scan_images" 
 
 
@@ -78,10 +78,10 @@ def get_current_position(robot: Dobot):
 def move_and_wait(robot, x, y, z, r,
                   retries=3,
                   command_delay=0.5,
-                  settle_time=0.5,      # 0.3 → 0.5
-                  timeout=12.0,         # 8.0 → 12.0
-                  poll_interval=0.3,    # 0.4 → 0.3 (daha sık kontrol)
-                  position_tolerance=0.05):  # 2.5 → 3.5
+                  settle_time=0.5,
+                  timeout=15.0,          # 12 → 15
+                  poll_interval=0.25,    # biraz daha sık kontrol
+                  position_tolerance=0.8):  # 0.05 → 0.8 
     
 
     start_pos = get_current_position(robot)
@@ -92,8 +92,10 @@ def move_and_wait(robot, x, y, z, r,
     dist_to_target = ((start_pos[0]-x)**2 +
                       (start_pos[1]-y)**2 +
                       (start_pos[2]-z)**2) ** 0.5
+    
     if dist_to_target <= position_tolerance:
-        print(f"[OK] Zaten hedefe yakın (dist={dist_to_target:.2f} mm)")
+        print(f"[OK] Zaten hedefte (dist={dist_to_target:.2f})")
+        return True
 
 
     command_sent = False
@@ -116,11 +118,11 @@ def move_and_wait(robot, x, y, z, r,
     elapsed = 0.0
     while elapsed < timeout:
         time.sleep(poll_interval)
-        elapsed += poll_interval
-
         pos = get_current_position(robot)
         if pos is None:
             continue
+
+        elapsed += poll_interval
 
         dist_target = ((pos[0]-x)**2 +
                        (pos[1]-y)**2 +
@@ -226,7 +228,9 @@ def main():
                 print("NOKTA ATLADI (hareket başarısız)")
                 continue
 
-            time.sleep(CAPTURE_DELAY)
+            # İlk nokta için daha uzun bekle
+            delay = CAPTURE_DELAY * 3 if i == 0 else CAPTURE_DELAY
+            time.sleep(delay)
 
             img_index += 1
 
