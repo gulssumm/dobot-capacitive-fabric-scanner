@@ -8,12 +8,13 @@ import time
 import os
 from datetime import datetime
 from pydobot import Dobot
+import threading
 
 DOBOT_PORT = "COM3"
 
 HOME_X = 215.0
 HOME_Y = -39.0
-HOME_Z = -115.0
+HOME_Z = -114.0
 HOME_R = 0.01
 
 SCAN_Z = HOME_Z
@@ -25,17 +26,20 @@ SCAN_HEIGHT = 10.0   # Y ekseninde toplam derinlik (aşağıya doğru, negatif Y
 STEP_SIZE   = 0.5    # Her satır arasındaki mesafe (mm)
 
 # Hareket hızı ve ivmesi (1-100)
-VELOCITY     = 50
-ACCELERATION = 50
+VELOCITY     = 20
+ACCELERATION = 20
 
 # Kamera (OBS Virtual Camera)
 CAMERA_INDEX = 1    
-CAPTURE_DELAY = 0.5   # Her noktada görüntü almadan önce bekleme süresi (saniye)
+CAPTURE_DELAY = 1.0   # Her noktada görüntü almadan önce bekleme süresi (saniye)
 
-TYPE = "blue_striped" 
-DESIGN = "01"  
-COMPOSITION = "black_color_fleck_deneme2"
+TYPE = "blue_striped" #blue-striped_01 #KAYNAK TEKSTIL
+DESIGN = "01"  #0 #17S5292-05
+COMPOSITION = "pin_mark" #unknown #%100 COTTON
 OUTPUT_DIR = "scan_images" 
+
+# Sabit liste yerine dinamik offset
+PROBLEMATIC_Y = -29.5  # firmware'in reddettiği Y
 
 
 def setup_output_dir(base_dir: str) -> str:
@@ -74,66 +78,86 @@ def get_current_position(robot: Dobot):
         print(f"Pozisyon okunamadı: {e}")
         return None
 
+def move_with_fallback(robot, x, y, z, r, offsets=[0.0, -0.1, 0.1, -0.2, 0.2]):
+    """Hedef koordinat firmware tarafından reddedilirse küçük offset'ler dene."""
+    for offset in offsets:
+        ty = round(y + offset, 3)
+        if offset != 0.0:
+            print(f"[RETRY] Y={y} → Y={ty} (offset={offset:+.1f})")
+        
+        success = move_and_wait(robot, x, ty, z, r)
+        if success:
+            return True, ty
+    
+    return False, y
+
+def clear_robot_queue(robot):
+    """Dobot'un iç komut kuyruğunu temizle."""
+    try:
+        robot._set_queued_cmd_stop_exec()
+        time.sleep(0.2)
+        robot._set_queued_cmd_clear()
+        time.sleep(0.2)
+        robot._set_queued_cmd_start_exec()
+        time.sleep(0.3)
+        print("[QUEUE] Kuyruk temizlendi.")
+    except Exception as e:
+        print(f"Kuyruk temizleme hatası: {e}")
+        
+def flush_robot(robot):
+    try:
+        robot.ser.reset_input_buffer()
+        robot.ser.reset_output_buffer()
+        time.sleep(0.2)
+        clear_robot_queue(robot)   # ← ekle
+        time.sleep(0.5)
+    except Exception as e:
+        print(f"Flush hatası: {e}")
+
 
 def move_and_wait(robot, x, y, z, r,
                   retries=3,
-                  command_delay=0.5,
-                  settle_time=0.5,
-                  timeout=15.0,          # 12 → 15
-                  poll_interval=0.25,    # biraz daha sık kontrol
-                  position_tolerance=0.8):  # 0.05 → 0.8 
-    
+                  settle_time=0.6,
+                  timeout=15.0,
+                  position_tolerance=0.3):
 
+    # Zaten hedefe yakın mı?
     start_pos = get_current_position(robot)
-    if start_pos is None:
-        print("Başlangıç pozisyonu okunamadı.")
-        return False
+    if start_pos:
+        dist = ((start_pos[0]-x)**2 +
+                (start_pos[1]-y)**2 +
+                (start_pos[2]-z)**2) ** 0.5
+        if dist <= position_tolerance:
+            print(f"[OK] Zaten hedefe yakın (dist={dist:.2f} mm)")
+            return True
 
-    dist_to_target = ((start_pos[0]-x)**2 +
-                      (start_pos[1]-y)**2 +
-                      (start_pos[2]-z)**2) ** 0.5
-    
-    if dist_to_target <= position_tolerance:
-        print(f"[OK] Zaten hedefte (dist={dist_to_target:.2f})")
-        return True
-
-
-    command_sent = False
     for attempt in range(1, retries + 1):
-        try:
-            robot.move_to(x, y, z, r, wait=False)
-            command_sent = True
-            time.sleep(command_delay)
-            break
-        except Exception as e:
-            print(f"move_to başarısız ({attempt}/{retries}): {e}")
-            time.sleep(0.5)
+        result = [False]
+        stop_flag = [False]
 
-    if not command_sent:
-        print("Komut gönderilemedi.")
-        return False
-    
+        def _move():
+            try:
+                robot.move_to(x, y, z, r, wait=True)
+                if not stop_flag[0]:
+                    result[0] = True
+            except Exception as e:
+                if not stop_flag[0]:
+                    print(f"move_to hatası: {e}")
 
-    # Hedefe ulaşmayı bekle
-    elapsed = 0.0
-    while elapsed < timeout:
-        time.sleep(poll_interval)
-        pos = get_current_position(robot)
-        if pos is None:
-            continue
+        t = threading.Thread(target=_move, daemon=True)
+        t.start()
+        t.join(timeout=timeout)
 
-        elapsed += poll_interval
-
-        dist_target = ((pos[0]-x)**2 +
-                       (pos[1]-y)**2 +
-                       (pos[2]-z)**2) ** 0.5
-
-        if dist_target <= position_tolerance:
-            print(f"[OK] Hedefe ulaşıldı (dist={dist_target:.2f} mm)")
+        if result[0]:
+            print(f"[OK] Hedefe ulaşıldı (deneme {attempt})")
             time.sleep(settle_time)
             return True
-    
-    print(f"[FAIL] Timeout")
+        else:
+            stop_flag[0] = True  # thread'e "artık önemli değil" sinyali
+            print(f"[FAIL] Timeout (deneme {attempt}/{retries})")
+            flush_robot(robot)   # ← serial buffer temizle
+            time.sleep(1.0)
+
     return False
 
 def generate_scan_points(home_x, home_y, width, height, step):
@@ -220,17 +244,19 @@ def main():
         log_file.write("index,x,y,z,r,image_file\n")
 
         for i, (x, y) in enumerate(points):  
+            # Her 50 noktada kuyruğu temizle
+            if i > 0 and i % 50 == 0:
+                clear_robot_queue(robot)
+
             print(f"[{i+1:04d}/{total}] Hareket: X={x:.2f}, Y={y:.2f}")
 
-            moved = move_and_wait(robot, x, y, SCAN_Z, SCAN_R)
+            moved, actual_y = move_with_fallback(robot, x, y, SCAN_Z, SCAN_R)
+            time.sleep(CAPTURE_DELAY)
 
             if not moved:
-                print("NOKTA ATLADI (hareket başarısız)")
+                print("NOKTA ATLADI")
+                log_file.write(f"FAIL,{x},{y},{SCAN_Z},{SCAN_R},SKIPPED\n")
                 continue
-
-            # İlk nokta için daha uzun bekle
-            delay = CAPTURE_DELAY * 3 if i == 0 else CAPTURE_DELAY
-            time.sleep(delay)
 
             img_index += 1
 
@@ -243,7 +269,7 @@ def main():
             status = "OK" if success else "FAIL"
             print(f"Görüntü: {img_name} [{status}]")
 
-            log_file.write(f"{img_index},{x},{y},{SCAN_Z},{SCAN_R},{img_name}\n")
+            log_file.write(f"{img_index},{x},{actual_y},{SCAN_Z},{SCAN_R},{img_name}\n")
 
     cap.release()
     robot.close()
