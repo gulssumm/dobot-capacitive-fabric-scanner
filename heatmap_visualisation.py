@@ -4,9 +4,10 @@ import matplotlib.pyplot as plt
 from scipy.interpolate import griddata
 import mplcursors
 import os
+from mpl_toolkits.mplot3d import Axes3D
 
 # ── Ayarlar ───────────────────────────────────────────────────────────────────
-CSV_FILE   = r"C:/Users/Aidata/DOBOT/scan_images/18K7119-00_Kaynak_Tekstil_97%COTTON_3EA/scan_log.csv"
+CSV_FILE   = r"C:\Users\Aidata\DOBOT\scan_images\18K7119-00_Kaynak_Tekstil_97%COTTON_3EA\scan_log.csv"
 OUTPUT_DIR = "."
 
 COLORMAP = "plasma"     # viridis, plasma, inferno, jet
@@ -49,18 +50,17 @@ def main():
     )
 
     # ── Figure ───────────────────────────────────────────────────────────────
-    fig, axes = plt.subplots(1, 2, figsize=(18, 7))
+    fig = plt.figure(figsize=(24, 7))
+
+    ax1 = fig.add_subplot(1, 3, 1)
+    ax2 = fig.add_subplot(1, 3, 2)
+    ax3 = fig.add_subplot(1, 3, 3, projection='3d')
 
     fig.suptitle(
         "Kapasitans Heatmap — EVAL AD7747",
         fontsize=16,
         fontweight="bold"
     )
-
-    # =========================================================================
-    # SOL: Heatmap
-    # =========================================================================
-    ax1 = axes[0]
 
     im1 = ax1.pcolormesh(
         Xi,
@@ -90,10 +90,6 @@ def main():
     ax1.set_aspect("equal")
     ax1.grid(True, alpha=0.3)
 
-    # =========================================================================
-    # SAĞ: Scatter
-    # =========================================================================
-    ax2 = axes[1]
 
     sc = ax2.scatter(
         x,
@@ -135,6 +131,46 @@ def main():
                     alpha=0.8
                 )
             )
+
+    # 3D SURFACE HEATMAP
+
+    surf = ax3.plot_surface(
+        Xi,
+        Yi,
+        Zi,
+        cmap=COLORMAP,
+        linewidth=0,
+        antialiased=True
+    )
+
+    # Gerçek ölçüm noktaları
+    ax3.scatter(
+        x,
+        y,
+        cap,
+        c="black",
+        s=15
+    )
+
+    cb3 = fig.colorbar(
+        surf,
+        ax=ax3,
+        shrink=0.7
+    )
+
+    cb3.set_label("Kapasitans (pF)")
+
+    ax3.set_xlabel("X (mm)")
+    ax3.set_ylabel("Y (mm)")
+    ax3.set_zlabel("Capacitance (pF)")
+
+    ax3.set_title("3D Kapasitans Surface")
+
+    # Görüş açısı
+    ax3.view_init(
+        elev=35,
+        azim=135
+    )
 
     # =========================================================================
     # INTERAKTİF HOVER

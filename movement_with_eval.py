@@ -45,7 +45,7 @@ CAP_SAMPLES  = 5        # Her noktada kaç ölçüm ortalaması alınsın
 # ─── KAYIT ────────────────────────────────────────────────────────────────────
 TYPE        = "18K7119-00"
 DESIGN      = "Kaynak_Tekstil"
-COMPOSITION = "97%COTTON_3EA"
+COMPOSITION = "97%COTTON_3EA_pin_mark"
 OUTPUT_DIR  = "scan_images"
 
 
