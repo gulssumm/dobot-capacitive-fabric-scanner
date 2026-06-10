@@ -3,9 +3,9 @@ import numpy as np
 import pandas as pd
 
 # --- CONFIGURATION ---
-INPUT_PANORAMA = "C:/Users/21180/PycharmProjects/DOBOT_magician/steel_sheet_1x1cm/combined_panorama_scatter.jpg"
-INPUT_CSV      = "C:/Users/21180/PycharmProjects/DOBOT_magician/steel_sheet_1x1cm/trajectory_data.csv"
-OUTPUT_CROPPED = "panorama_cropped_scatter_steel.png"  # PNG for transparency support
+INPUT_PANORAMA = "C:/Users/21180/PycharmProjects/DOBOT_magician/blue-striped-2x2cm/combined_panorama_scatter.jpg"
+INPUT_CSV      = "C:/Users/21180/PycharmProjects/DOBOT_magician/blue-striped-2x2cm/trajectory_data.csv"
+OUTPUT_CROPPED = "panorama_cropped_scatter_bluestriped.png"  # PNG for transparency support
 
 df = pd.read_csv(INPUT_CSV)
 pts = df[['x', 'y']].values.astype(np.float32)
