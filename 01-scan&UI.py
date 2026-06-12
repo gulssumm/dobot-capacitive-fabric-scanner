@@ -16,6 +16,7 @@ import tkinter as tk
 from tkinter import ttk, scrolledtext
 from datetime import datetime
 from pydobot import Dobot
+import base64
 
 # ─── DOBOT ────────────────────────────────────────────────────────────────────
 DOBOT_PORT = "COM3"
@@ -28,8 +29,8 @@ HOME_R = 0.01
 SCAN_Z = HOME_Z
 SCAN_R = HOME_R
 
-SCAN_WIDTH   = 10.0
-SCAN_HEIGHT  = 10.0
+DEFAULT_SCAN_WIDTH   = 10.0  
+DEFAULT_SCAN_HEIGHT  = 10.0  
 STEP_SIZE    = 0.5
 
 VELOCITY     = 20
@@ -230,8 +231,45 @@ class ScanApp(tk.Tk):
         self.resizable(False, False)
         self.configure(bg="#1a1a2e")
 
+        try:
+            self.icon_img = tk.PhotoImage(width=16, height=16)
+            X = "#e94560"
+            T = ""
+            
+            pixels = [
+                [T,T,T,T,T,X,X,X,X,X,X,T,T,T,T,T],
+                [T,T,T,X,X,T,T,T,T,T,T,X,X,T,T,T],
+                [T,T,X,T,T,T,T,X,X,T,T,T,T,X,T,T],
+                [T,X,T,T,T,T,T,X,X,T,T,T,T,T,X,T],
+                [T,X,T,T,T,T,T,T,T,T,T,T,T,T,X,T],
+                [X,T,T,T,T,X,X,T,T,X,X,T,T,T,T,X],
+                [X,T,T,T,X,T,T,T,T,T,T,X,T,T,T,X],
+                [X,X,X,X,T,T,T,T,T,T,T,T,X,X,X,X],
+                [X,X,X,X,T,T,T,T,T,T,T,T,X,X,X,X],
+                [X,T,T,T,X,T,T,T,T,T,T,X,T,T,T,X],
+                [X,T,T,T,T,X,X,T,T,X,X,T,T,T,T,X],
+                [T,X,T,T,T,T,T,T,T,T,T,T,T,T,X,T],
+                [T,X,T,T,T,T,T,X,X,T,T,T,T,T,X,T],
+                [T,T,X,T,T,T,T,X,X,T,T,T,T,X,T,T],
+                [T,T,T,X,X,T,T,T,T,T,T,X,X,T,T,T],
+                [T,T,T,T,T,X,X,X,X,X,X,T,T,T,T,T]
+            ]
+            
+            for row_idx, row in enumerate(pixels):
+                for col_idx, color in enumerate(row):
+                    if color: # Skip transparent pixels
+                        self.icon_img.put(color, (col_idx, row_idx))
+                        
+            self.wm_iconphoto(True, self.icon_img)
+        except Exception as e:
+            print(f"İkon yüklenirken hata oluştu: {e}")
+            
         self._scan_thread = None
         self._stop_event  = threading.Event()
+        
+        # Süre hesabı için değişkenler
+        self._scanned_count = 0
+        self._total_count = 0
 
         self._build_ui()
 
@@ -269,7 +307,7 @@ class ScanApp(tk.Tk):
         right = tk.Frame(body, bg=BG)
         right.pack(side="left", fill="both", expand=True)
 
-        # ── Dosya Adı Kartı ───────────────────────────────────────────────────
+        # ── Kart Yardımcı Fonksiyonu ──────────────────────────────────────────
         def card(parent, title):
             f = tk.Frame(parent, bg=CARD, padx=10, pady=10,
                          highlightbackground="#2a2a4e", highlightthickness=1)
@@ -277,6 +315,7 @@ class ScanApp(tk.Tk):
             tk.Label(f, text=title, font=FONT_H, bg=CARD, fg=ACC).pack(anchor="w", pady=(0, 6))
             return f
 
+        # ── Dosya Adı Kartı ───────────────────────────────────────────────────
         fname_card = card(left, "Dosya Adı")
 
         fields = [("TYPE", "17K1025-00"), ("DESIGN", "KaynakGroup"), ("COMPOSITION", "100%BAMBU")]
@@ -292,13 +331,31 @@ class ScanApp(tk.Tk):
             e.pack(side="left", fill="x", expand=True, ipady=3, padx=(4, 0))
             self._entries[label] = e
 
-        # Önizleme etiketi
         self._preview_var = tk.StringVar()
         tk.Label(fname_card, textvariable=self._preview_var,
                  font=FONT_SM, bg=CARD, fg=DIM, wraplength=260, anchor="w").pack(fill="x", pady=(6, 0))
         self._update_preview()
         for e in self._entries.values():
             e.bind("<KeyRelease>", lambda _: self._update_preview())
+
+        # ── Tarama Alanı Kartı ────────────────────────────────────────────────
+        area_card = card(left, "Tarama Alanı (mm)")
+        
+        self._width_var = tk.StringVar(value=str(DEFAULT_SCAN_WIDTH))
+        self._height_var = tk.StringVar(value=str(DEFAULT_SCAN_HEIGHT))
+
+        def add_area_setting(parent, label_text, var):
+            row = tk.Frame(parent, bg=CARD)
+            row.pack(fill="x", pady=2)
+            tk.Label(row, text=label_text, font=FONT_SM, bg=CARD, fg=DIM, width=15, anchor="w").pack(side="left")
+            e = tk.Entry(row, textvariable=var, font=FONT_N, bg="#0f3460", fg=FG,
+                         insertbackground=FG, relief="flat",
+                         highlightbackground="#3a3a6e", highlightthickness=1)
+            e.pack(side="left", fill="x", expand=True, ipady=3, padx=(4, 0))
+            return e
+
+        self._height_entry = add_area_setting(area_card, "X Uzunluğu (Yük.):", self._height_var)
+        self._width_entry  = add_area_setting(area_card, "Y Genişliği (Gen.):", self._width_var)
 
         # ── İlerleme Kartı ────────────────────────────────────────────────────
         prog_card = card(left, "İlerleme")
@@ -326,14 +383,22 @@ class ScanApp(tk.Tk):
         self._pb.pack(fill="x", pady=(0, 6))
 
         # Kalan / geçen
-        stat_row = tk.Frame(prog_card, bg=CARD)
-        stat_row.pack(fill="x")
+        stat_row1 = tk.Frame(prog_card, bg=CARD)
+        stat_row1.pack(fill="x", pady=(0, 2))
         self._remaining_var = tk.StringVar(value="Kalan: —")
         self._elapsed_var   = tk.StringVar(value="Geçen: 0s")
-        tk.Label(stat_row, textvariable=self._remaining_var,
+        tk.Label(stat_row1, textvariable=self._remaining_var,
                  font=FONT_SM, bg=CARD, fg=DIM).pack(side="left")
-        tk.Label(stat_row, textvariable=self._elapsed_var,
+        tk.Label(stat_row1, textvariable=self._elapsed_var,
                  font=FONT_SM, bg=CARD, fg=DIM).pack(side="right")
+
+        # Kalan Süre
+        stat_row2 = tk.Frame(prog_card, bg=CARD)
+        stat_row2.pack(fill="x")
+        self._eta_var = tk.StringVar(value="Kalan Süre: —")
+        # Rengi biraz daha belirgin yapıyoruz
+        tk.Label(stat_row2, textvariable=self._eta_var,
+                 font=("Segoe UI", 9, "bold"), bg=CARD, fg="#5dbcd2").pack(side="right")
 
         # Durum etiketi
         self._status_var = tk.StringVar(value="Hazır")
@@ -344,11 +409,19 @@ class ScanApp(tk.Tk):
         btn_row = tk.Frame(left, bg=BG)
         btn_row.pack(fill="x", pady=(4, 0))
 
+        self._home_btn = tk.Button(
+            btn_row, text="⌂  BAŞLANGICA GİT", font=FONT_H,
+            bg="#0f3460", fg="white", relief="flat",
+            activebackground="#16213e", activeforeground="white",
+            cursor="hand2", padx=8, pady=8,
+            command=self._go_home)
+        self._home_btn.pack(side="left", fill="x", expand=True, padx=(0, 4))
+
         self._start_btn = tk.Button(
             btn_row, text="▶  BAŞLAT", font=FONT_H,
             bg=ACC, fg="white", relief="flat",
             activebackground="#c73652", activeforeground="white",
-            cursor="hand2", padx=12, pady=8,
+            cursor="hand2", padx=8, pady=8,
             command=self._start_scan)
         self._start_btn.pack(side="left", fill="x", expand=True, padx=(0, 4))
 
@@ -356,7 +429,7 @@ class ScanApp(tk.Tk):
             btn_row, text="■  DURDUR", font=FONT_H,
             bg="#2a2a4e", fg=DIM, relief="flat",
             activebackground="#3a3a6e", activeforeground="white",
-            cursor="hand2", padx=12, pady=8,
+            cursor="hand2", padx=8, pady=8,
             state="disabled",
             command=self._stop_scan)
         self._stop_btn.pack(side="left", fill="x", expand=True)
@@ -390,6 +463,8 @@ class ScanApp(tk.Tk):
         self.after(0, _do)
 
     def _set_progress(self, done, total):
+        self._scanned_count = done
+        self._total_count = total
         def _do():
             self._done_var.set(str(done))
             self._total_var.set(str(total))
@@ -397,22 +472,72 @@ class ScanApp(tk.Tk):
             self._pb["value"]   = done
             remaining = total - done
             self._remaining_var.set(f"Kalan: {remaining} görüntü")
-            if self._start_time:
-                elapsed = int(time.time() - self._start_time)
-                self._elapsed_var.set(f"Geçen: {elapsed}s")
         self.after(0, _do)
 
     def _set_status(self, msg):
         self.after(0, lambda: self._status_var.set(msg))
 
-    # ── Tarama ────────────────────────────────────────────────────────────────
+    # ── Başlangıca Git İşlemleri ──────────────────────────────────────────────
+
+    def _go_home(self):
+        self._home_btn.configure(state="disabled")
+        self._start_btn.configure(state="disabled")
+        self._stop_btn.configure(state="disabled")
+        
+        self._set_status("Başlangıca gidiliyor…")
+        threading.Thread(target=self._go_home_worker, daemon=True).start()
+
+    def _go_home_worker(self):
+        self._log_write(f"Dobot'a bağlanılıyor: {DOBOT_PORT}")
+        try:
+            robot = Dobot(port=DOBOT_PORT, verbose=False)
+            robot.speed(VELOCITY, ACCELERATION)
+            self._log_write("Dobot bağlantısı başarılı. Başlangıç pozisyonuna hareket ediliyor...")
+            
+            if move_and_wait(robot, HOME_X, HOME_Y, HOME_Z, HOME_R):
+                self._log_write("Başlangıç pozisyonuna başarıyla ulaşıldı.")
+                self._set_status("Başlangıçta hazır.")
+            else:
+                self._log_write("HATA: Başlangıç pozisyonuna ulaşılamadı.")
+                self._set_status("Hata: Başlangıca gidilemedi.")
+            
+            robot.close()
+        except Exception as e:
+            self._log_write(f"Dobot bağlantı hatası: {e}")
+            self._set_status("Hata: Dobot yok")
+
+        self.after(0, self._on_home_done)
+
+    def _on_home_done(self):
+        self._home_btn.configure(state="normal")
+        self._start_btn.configure(state="normal")
+
+    # ── Tarama İşlemleri ──────────────────────────────────────────────────────
 
     def _start_scan(self):
+        try:
+            float(self._width_var.get())
+            float(self._height_var.get())
+        except ValueError:
+            self._log_write("HATA: X Uzunluğu ve Y Genişliği sadece sayı olmalıdır!")
+            self._set_status("Hata: Geçersiz Boyut")
+            return
+
         self._stop_event.clear()
+        self._home_btn.configure(state="disabled")
         self._start_btn.configure(state="disabled")
         self._stop_btn.configure(state="normal", bg="#e94560", fg="white")
+        
         for e in self._entries.values():
             e.configure(state="disabled")
+        self._width_entry.configure(state="disabled")
+        self._height_entry.configure(state="disabled")
+
+        # Değişkenleri sıfırla
+        self._scanned_count = 0
+        self._total_count = 0
+        self._eta_var.set("Kalan Süre: Hesaplanıyor...")
+
         self._start_time = time.time()
         self._scan_thread = threading.Thread(target=self._scan_worker, daemon=True)
         self._scan_thread.start()
@@ -425,14 +550,48 @@ class ScanApp(tk.Tk):
     def _tick_elapsed(self):
         if self._start_time and not self._stop_event.is_set():
             elapsed = int(time.time() - self._start_time)
-            self._elapsed_var.set(f"Geçen: {elapsed}s")
+            
+            # Geçen süreyi formatla
+            m_el, s_el = divmod(elapsed, 60)
+            if m_el > 0:
+                el_str = f"Geçen: {m_el}dk {s_el}sn"
+            else:
+                el_str = f"Geçen: {s_el}sn"
+            self._elapsed_var.set(el_str)
+
+            # Kalan süreyi hesapla ve formatla
+            if self._scanned_count > 0 and self._total_count > 0:
+                time_per_item = elapsed / self._scanned_count
+                rem_items = self._total_count - self._scanned_count
+                
+                if rem_items > 0:
+                    rem_time = int(time_per_item * rem_items)
+                    m, s = divmod(rem_time, 60)
+                    h, m = divmod(m, 60)
+                    
+                    if h > 0:
+                        eta_str = f"Kalan Süre: ~{h}sa {m}dk"
+                    elif m > 0:
+                        eta_str = f"Kalan Süre: ~{m}dk {s}sn"
+                    else:
+                        eta_str = f"Kalan Süre: ~{s}sn"
+                else:
+                    eta_str = "Kalan Süre: 0sn"
+                    
+                self._eta_var.set(eta_str)
+            elif self._scanned_count == 0 and elapsed > 0:
+                self._eta_var.set("Kalan Süre: Hesaplanıyor...")
+
             self.after(1000, self._tick_elapsed)
 
     def _on_scan_done(self):
+        self._home_btn.configure(state="normal")
         self._start_btn.configure(state="normal")
         self._stop_btn.configure(state="disabled", bg="#2a2a4e", fg="#8892a4")
         for e in self._entries.values():
             e.configure(state="normal")
+        self._width_entry.configure(state="normal")
+        self._height_entry.configure(state="normal")
         self._start_time = None
 
     def _scan_worker(self):
@@ -440,8 +599,12 @@ class ScanApp(tk.Tk):
         design      = self._entries["DESIGN"].get()
         composition = self._entries["COMPOSITION"].get()
 
+        scan_w = float(self._width_var.get())
+        scan_h = float(self._height_var.get())
+
         save_dir = setup_output_dir(OUTPUT_DIR, type_, design, composition)
         self._log_write(f"Görüntüler kaydedilecek: {save_dir}")
+        self._log_write(f"Tarama Alanı: X={scan_h}mm, Y={scan_w}mm")
 
         # AD7747
         ad7747 = AD7747Reader(AD7747_PORT, AD7747_BAUD)
@@ -487,7 +650,7 @@ class ScanApp(tk.Tk):
 
         self._log_write("Home pozisyonuna ulaşıldı. Tarama başlıyor…")
 
-        points = generate_scan_points(HOME_X, HOME_Y, SCAN_WIDTH, SCAN_HEIGHT, STEP_SIZE)
+        points = generate_scan_points(HOME_X, HOME_Y, scan_w, scan_h, STEP_SIZE)
         total  = len(points)
         self._log_write(f"Toplam {total} nokta taranacak.")
         self._set_progress(0, total)
@@ -565,6 +728,7 @@ class ScanApp(tk.Tk):
         self._log_write(f"\nTarama tamamlandı. {img_index} nokta işlendi.")
         self._log_write(f"Log: {log_path}")
         self._set_status(f"Tamamlandı — {img_index} görüntü")
+        self._eta_var.set("Kalan Süre: 0sn")
         self.after(0, self._on_scan_done)
 
 
