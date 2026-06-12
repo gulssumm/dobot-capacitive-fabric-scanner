@@ -5,13 +5,11 @@ import os
 import re
 import matplotlib.pyplot as plt
 
-# --- CONFIGURATION ---
-TARGET_FOLDER = r"C:\Users\ZEYNEP\Desktop\Dobot_yan_sanayi\steel_12_sheet\steel_12_sheet"
-
-OUTPUT_PANORAMA = "panorama_curved_steel.jpg"
-OUTPUT_CSV = "trajectory_data_stell.csv"
-OUTPUT_SCATTER = "scatter_plot_steel.png"
-OUTPUT_COMBINED = "combined_panorama_scatter_steel.jpg"
+TARGET_FOLDER = r"C:\Users\21180\PycharmProjects\scan_images\KAYNAKGROUP22S5359_02 (mavi)_100%COTTON"
+OUTPUT_PANORAMA = "panorama_curved_22s5359_02_mavi.jpg"
+OUTPUT_CSV = "trajectory_data_22s5359_02_mavi.csv"
+OUTPUT_SCATTER = "scatter_plot_22s5359_02_mavi.png"
+OUTPUT_COMBINED = "combined_panorama_scatter_22s5359_02_mavi.jpg"
 
 # Fiziksel birim → piksel ölçek faktörü (birim piksel ise 1.0 bırakın)
 SCALE = 1.0
@@ -243,5 +241,3 @@ for i in range(len(center_x_list)):
                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2, cv2.LINE_AA)
 cv2.imwrite(OUTPUT_COMBINED, combined_img)
 print(f"[4/4] Combined saved: {OUTPUT_COMBINED}")
-
-print("\n--- ALL TASKS COMPLETED SUCCESSFULLY! ---")

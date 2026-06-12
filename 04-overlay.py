@@ -5,12 +5,11 @@ import os
 import re
 from numpy.linalg import lstsq
 
-# --- CONFIGURATION ---
-BASE_IMAGE_PATH = r"C:\Users\21180\PycharmProjects\DOBOT_magician\stitching_sonuclari\combined_panorama_scatter_white_pinmark.jpg"
-SCAN_CSV_PATH   = r"C:\Users\21180\PycharmProjects\scan_images\17K1025-00_KaynakGroup_100%BAMBU\scan_log.csv"
-TRAJECTORY_CSV  = r"C:\Users\21180\PycharmProjects\DOBOT_magician\stitching_sonuclari\trajectory_data_white_pinmark.csv"
-IMAGE_FOLDER    = r"C:\Users\21180\PycharmProjects\scan_images\17K1025-00_KaynakGroup_100%BAMBU"
-OUTPUT_HEATMAP  = "heatmap_capacitance_overlay.jpg"
+BASE_IMAGE_PATH = r"C:\Users\21180\PycharmProjects\DOBOT_magician\stitching_heatmap_sonuclari\results_18K7119-00_Kaynak_Tekstil_97%COTTON_3EA"
+SCAN_CSV_PATH   = r"C:\Users\21180\PycharmProjects\scan_images\18K7119-00_Kaynak_Tekstil_97%COTTON_3EA\scan_log.csv"
+TRAJECTORY_CSV  = r"C:\Users\21180\PycharmProjects\DOBOT_magician\stitching_heatmap_sonuclari\results_18K7119-00_Kaynak_Tekstil_97%COTTON_3EA\trajectory_data_18K7119_3EA.csv"
+IMAGE_FOLDER    = r"C:\Users\21180\PycharmProjects\scan_images\18K7119-00_Kaynak_Tekstil_97%COTTON_3EA"
+OUTPUT_HEATMAP  = "heatmap_capacitance_overlay_118K7119_3EA.jpg"
 
 BLOB_RADIUS = 60
 BLUR_SIGMA  = 80
