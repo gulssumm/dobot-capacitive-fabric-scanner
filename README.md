@@ -1,66 +1,69 @@
-# DOBOT Magician — Robotic Fabric Scanning & Capacitance Mapping
+# Capacitive Imaging-Based Robotic Quality Control System (Dobot Magician & SIFT/ORB Stitching)
 
-Bachelor's thesis project. A Dobot Magician robotic arm performs a serpentine
-scan over a fabric sample, capturing synchronized camera images (via an OBS
-virtual camera) and capacitance readings (via an AD7747 sensor on Arduino) at
-each scan point. The captured images are then stitched into a panorama and
-overlaid with a capacitance heatmap.
+Developed as the robotics, sensor-fusion, and image-stitching pipeline of my B.Sc. thesis, this project automates high-resolution fabric surface inspection. A **Dobot Magician** robotic arm executes a precision serpentine (boustrophedon) scan over textile samples, capturing synchronized microscopic camera frames and **AD7747 capacitive sensor** readings (in picofarads, `pF`) via Arduino at every coordinate. The captured frames are registered into a unified panorama using a **hybrid SIFT + ORB** feature-matching algorithm and overlaid with a spatially calibrated **capacitance heatmap** to localize surface and subsurface anomalies.
 
-## Pipeline
+*(For the deep-learning pixel-level defect segmentation module of this thesis using **Attention U-Net** and **HRNet**, see the companion repository on the AITEX dataset.)*
 
-| Step | Script | Purpose |
-|---|---|---|
-| 1 | `01-scan&UI.py` | Tkinter GUI to control the Dobot, run the serpentine scan, capture camera frames + capacitance readings at each point, and log positions |
-| 2 | `02-panoramicroscope_SIFT_and_ORB.py` | Stitches the per-point images into a panorama using SIFT (falls back to ORB) feature matching; outputs the panorama, a trajectory CSV, and a scatter plot |
-| 3 | `03-scatter_plot_cropping.py` | Crops the panorama to the convex hull of the scanned area and adds alpha transparency outside it |
-| 4 | `04-overlay.py` | Maps physical scan coordinates to panorama pixel coordinates and overlays a capacitance heatmap on the cropped panorama |
+## End-to-End Pipeline
 
-`home_position_tarama_v2.py` is an earlier, simpler scan script (no GUI, no
-capacitance sensor) — kept for reference / fallback use.
+| Step | Script | Description |
+| :--- | :--- | :--- |
+| **1. Robotic Scan & Data Acquisition** | `01-scan&UI.py` | Multi-threaded **Tkinter** control panel that drives the Dobot Magician along a 0.5 mm serpentine grid, reads averaged capacitance values (`pF`) from an **AD7747** sensor over serial (`pyserial`), evaluates frame focus via **Laplacian variance sharpness**, and logs synchronized coordinates to `scan_log.csv`. |
+| **2. Hybrid Panorama Stitching** | `02-panoramicroscope_SIFT_and_ORB.py` | Applies **CLAHE** contrast enhancement and registers sequential frames via **SIFT** (`RANSAC` partial affine estimation with inlier-ratio validation), falling back to **ORB** and physical encoder offsets when texture is uniform. Blends frames seamlessly using a **Gaussian feather mask**. |
+| **3. Convex-Hull ROI Cropping** | `03-scatter_plot_cropping.py` | Computes the convex hull of the stitched camera trajectory, masks out exterior borders via an alpha channel (`BGRA`), and crops to the active inspection region. |
+| **4. Capacitive Sensor Fusion & Heatmap Overlay** | `04-overlay.py` | Calibrates physical robot coordinates (`mm`) to stitched panorama coordinates (`px`) using **least-squares affine regression (`numpy.linalg.lstsq`)** and renders a Gaussian-smoothed `COLORMAP_JET` capacitance heatmap over the stitched fabric surface. |
 
-## Hardware setup
+## Hardware Setup
 
-- **Dobot Magician** — connect and note its serial port (default `COM3` in the scripts)
-- **Camera** — start OBS → Tools → Start Virtual Camera before running the scan
-- **AD7747 capacitance sensor** — connected via Arduino; set the Arduino's serial
-  port in the `AD7747_PORT` variable (default `COM4`), and make sure `debug_mode = false`
-  in the Arduino sketch
+- **Robotic Manipulator:** Dobot Magician connected via USB serial (default `COM3`, step size `0.5 mm`, velocity/acceleration `20`).
+- **Microscope Camera:** Connected via OBS Virtual Camera (`CAMERA_INDEX = 1`) with automatic buffer flushing and Laplacian blur detection (`sharpness < 30`).
+- **Capacitive Sensing Unit:** Analog Devices **AD7747** 24-bit capacitance-to-digital converter interfaced via Arduino (`COM4`, `9600 baud`), averaging 5 samples per grid point.
 
-## Requirements
+## Installation & Usage
 
 ```bash
 pip install -r requirements.txt
 ```
 
-Windows only (`pydobot`/`pyserial` talk to COM ports).
-
-## Usage
-
-1. Update the config constants at the top of each script (serial ports, home
-   position, scan area, and — for scripts 02–04 — the input/output paths,
-   which are currently hardcoded to a local machine and **must be changed**
-   before running elsewhere).
-2. Run `01-scan&UI.py` to perform a scan. Images are saved under `scan_images/<type>_<design>_<composition>/`.
-3. Run `02-panoramicroscope_SIFT_and_ORB.py` on the resulting folder to build the panorama.
-4. Run `03-scatter_plot_cropping.py` to crop it to the scanned region.
-5. Run `04-overlay.py` to generate the capacitance heatmap overlay.
-
-## Repository layout
-
+### 1. Run the Robotic Scanner GUI
+```bash
+python "01-scan&UI.py"
 ```
-DOBOT_magician/
-├── 01-scan&UI.py
-├── 02-panoramicroscope_SIFT_and_ORB.py
-├── 03-scatter_plot_cropping.py
-├── 04-overlay.py
-├── home_position_tarama_v2.py
-├── requirements.txt
-└── stitching_heatmap_sonuclari/   # sample outputs per fabric sample
+Configure the sample metadata (`TYPE`, `DESIGN`, `COMPOSITION`) and scan dimensions (`X`, `Y` in `mm`) in the GUI. Output images and `scan_log.csv` are saved under `scan_images/<TYPE>_<DESIGN>_<COMPOSITION>/`.
+
+### 2. Stitch Microscopic Frames into a Panorama
+```bash
+python 02-panoramicroscope_SIFT_and_ORB.py \
+    --input-dir "scan_images/sample_scan" \
+    --output-panorama "panorama_stitched.jpg" \
+    --output-csv "trajectory_data.csv"
 ```
 
-## Known limitations / TODO
+### 3. Crop Panorama to Scanned Convex Hull
+```bash
+python 03-scatter_plot_cropping.py \
+    --panorama "panorama_stitched.jpg" \
+    --csv "trajectory_data.csv" \
+    --output "panorama_cropped.png"
+```
 
-- [ ] Replace hardcoded absolute paths in scripts 02–04 with CLI args or a config file
-- [ ] Remove `.idea/` from version control (add to `.gitignore`)
-- [ ] Consider moving/excluding `stitching_heatmap_sonuclari/` (large binary results) from git, or documenting it as sample output only
-- [ ] Decide whether `home_position_tarama_v2.py` is still needed or can be archived
+### 4. Generate Multi-Modal Capacitance Heatmap Overlay
+```bash
+python 04-overlay.py \
+    --base-image "panorama_stitched.jpg" \
+    --scan-csv "scan_images/sample_scan/scan_log.csv" \
+    --trajectory-csv "trajectory_data.csv" \
+    --image-folder "scan_images/sample_scan" \
+    --output "heatmap_capacitance_overlay.jpg"
+```
+
+## Repository Structure
+
+```text
+├── 01-scan&UI.py                         # Tkinter GUI, Dobot serpentine controller & AD7747 serial logger
+├── 02-panoramicroscope_SIFT_and_ORB.py   # CLAHE + SIFT/ORB + RANSAC + Gaussian feather panorama stitcher
+├── 03-scatter_plot_cropping.py           # Convex-hull alpha masking and ROI cropping
+├── 04-overlay.py                         # Least-squares coordinate calibration & capacitance heatmap fusion
+├── requirements.txt                      # Python dependencies
+└── README.md
+```
